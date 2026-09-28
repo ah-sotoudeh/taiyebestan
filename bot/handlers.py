@@ -1,6 +1,6 @@
 """
 هندلرهای پیام ربات طیبستان
-دکمه مینی‌اپ با فیلد web_app مستقیم از API بله
+برای هر محصول یک دکمه مینی‌اپ جدا
 """
 import requests
 from bale import Message
@@ -11,23 +11,35 @@ from .products import search_products, format_product_message
 API = f"https://tapi.bale.ai/bot{BALE_TOKEN}"
 
 
-def miniapp_keyboard(product_url: str = None):
+def products_keyboard(products=None):
     """
-    کیبورد با دکمه مینی‌اپ.
-    اگر product_url داده شود، همان صفحه محصول در مینی‌اپ باز می‌شود؛
-    وگرنه صفحه اصلی فروشگاه.
+    برای هر محصول یک دکمه مینی‌اپ:
+    مشاهده «نام محصول» در فروشگاه
     """
-    url = product_url or SITE_URL
-    return {
-        "inline_keyboard": [
-            [{"text": "🛒 باز کردن در مینی‌اپ", "web_app": {"url": url}}],
-            [{"text": "🌐 باز کردن در مرورگر", "url": url}],
-        ]
-    }
+    rows = []
+    if products:
+        for p in products:
+            name = (p.get("name") or "محصول").strip()
+            # متن دکمه نباید خیلی بلند باشد
+            label = name if len(name) <= 40 else name[:37] + "..."
+            url = p.get("url") or SITE_URL
+            rows.append([
+                {
+                    "text": f"مشاهده «{label}» در فروشگاه",
+                    "web_app": {"url": url},
+                }
+            ])
+    else:
+        rows.append([
+            {
+                "text": "مشاهده فروشگاه طیبستان",
+                "web_app": {"url": SITE_URL},
+            }
+        ])
+    return {"inline_keyboard": rows}
 
 
 def send_text(chat_id, text, reply_markup=None, reply_to=None):
-    """ارسال پیام مستقیم با API بله (پشتیبانی web_app)"""
     payload = {
         "chat_id": chat_id,
         "text": text,
@@ -47,8 +59,7 @@ def send_text(chat_id, text, reply_markup=None, reply_to=None):
 async def handle_start(message: Message):
     name = getattr(message.author, "first_name", None) or "کاربر"
     text = WELCOME_MESSAGE.format(name=name)
-    chat_id = message.chat_id
-    send_text(chat_id, text, reply_markup=miniapp_keyboard())
+    send_text(message.chat_id, text, reply_markup=products_keyboard())
 
 
 async def handle_text(message: Message):
@@ -64,12 +75,9 @@ async def handle_text(message: Message):
             chat_id,
             f"متأسفانه محصولی با عنوان «{query}» پیدا نشد 😕\n"
             "لطفاً نام دیگری امتحان کنید یا از دکمه فروشگاه استفاده کنید.",
-            reply_markup=miniapp_keyboard(),
+            reply_markup=products_keyboard(),
         )
         return
-
-    # اگر فقط یک نتیجه بود، دکمه مینی‌اپ همان محصول را باز کند
-    product_url = results[0].get("url") if len(results) == 1 else SITE_URL
 
     parts = [f"🔍 نتایج برای «{query}»:\n"]
     for i, p in enumerate(results, 1):
@@ -80,5 +88,5 @@ async def handle_text(message: Message):
     send_text(
         chat_id,
         "\n".join(parts),
-        reply_markup=miniapp_keyboard(product_url),
+        reply_markup=products_keyboard(results),
     )
