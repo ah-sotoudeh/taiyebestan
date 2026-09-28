@@ -1,27 +1,23 @@
 """
 هندلرهای پیام ربات طیبستان
-مینی‌اپ روی دامنه اصلی: https://taiyebestan.ir
+لینک فروشگاه روی دامنه اصلی: https://taiyebestan.ir
+
+نکته: python-bale-bot از WebAppInfo پشتیبانی نمی‌کند.
+برای مینی‌اپ واقعی، از BotFather → Bot Settings → Menu Button
+آدرس https://taiyebestan.ir را ست کنید.
 """
-from bale import Message, InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo
+from bale import Message, InlineKeyboardMarkup, InlineKeyboardButton
 
 from .config import WELCOME_MESSAGE, SITE_URL
 from .products import search_products, format_product_message
 
 
 def get_shop_keyboard() -> InlineKeyboardMarkup:
-    """دکمه مینی‌اپ روی دامنه اصلی سایت"""
+    """دکمه لینک فروشگاه روی دامنه اصلی"""
     kb = InlineKeyboardMarkup()
-    # مینی‌اپ بله — همان سایت اصلی
     kb.add(
         InlineKeyboardButton(
-            text="🛒 فروشگاه طیبستان (مینی‌اپ)",
-            web_app=WebAppInfo(url=SITE_URL),
-        )
-    )
-    # لینک معمولی در مرورگر
-    kb.add(
-        InlineKeyboardButton(
-            text="🌐 باز کردن در مرورگر",
+            text="🛒 فروشگاه طیبستان",
             url=SITE_URL,
         )
     )
