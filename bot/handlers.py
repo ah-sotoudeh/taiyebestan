@@ -1,21 +1,24 @@
 """
 هندلرهای پیام ربات طیبستان
+مینی‌اپ روی دامنه اصلی: https://taiyebestan.ir
 """
-from bale import Bot, Message, InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo
+from bale import Message, InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo
 
 from .config import WELCOME_MESSAGE, SITE_URL
 from .products import search_products, format_product_message
 
 
 def get_shop_keyboard() -> InlineKeyboardMarkup:
-    """دکمه مینی‌اپ فروشگاه"""
+    """دکمه مینی‌اپ روی دامنه اصلی سایت"""
     kb = InlineKeyboardMarkup()
+    # مینی‌اپ بله — همان سایت اصلی
     kb.add(
         InlineKeyboardButton(
-            text="🛒 مشاهده فروشگاه طیبستان",
+            text="🛒 فروشگاه طیبستان (مینی‌اپ)",
             web_app=WebAppInfo(url=SITE_URL),
         )
     )
+    # لینک معمولی در مرورگر
     kb.add(
         InlineKeyboardButton(
             text="🌐 باز کردن در مرورگر",
@@ -26,22 +29,17 @@ def get_shop_keyboard() -> InlineKeyboardMarkup:
 
 
 async def handle_start(message: Message):
-    """دستور /start و خوشامدگویی"""
-    name = message.author.first_name or "کاربر"
+    name = getattr(message.author, "first_name", None) or "کاربر"
     text = WELCOME_MESSAGE.format(name=name)
     await message.reply(text, components=get_shop_keyboard())
 
 
 async def handle_text(message: Message):
-    """جستجوی محصول با متن پیام"""
-    query = (message.content or "").strip()
+    query = (getattr(message, "content", None) or "").strip()
     if not query:
         return
 
-    # دستورات خاص
     if query.startswith("/"):
-        if query in ("/start", "/help"):
-            await handle_start(message)
         return
 
     results = search_products(query, limit=5)
@@ -54,11 +52,9 @@ async def handle_text(message: Message):
         )
         return
 
-    # ارسال نتایج
     reply_parts = [f"🔍 نتایج جستجو برای «{query}»:\n"]
     for p in results:
         reply_parts.append(format_product_message(p))
-        reply_parts.append("")  # فاصله
+        reply_parts.append("")
 
-    text = "\n".join(reply_parts)
-    await message.reply(text, components=get_shop_keyboard())
+    await message.reply("\n".join(reply_parts), components=get_shop_keyboard())
