@@ -1,9 +1,10 @@
 """
-نقطه ورود ربات طیبستان - حالت polling (برای تست محلی)
-برای production روی cPanel از webhook + Flask استفاده کنید.
+ربات طیبستان — فقط polling (بدون webhook)
+اجرا:
+    python -m bot.main
 """
+import asyncio
 from bale import Bot, Message
-from bale.handlers import MessageHandler, CommandHandler
 
 from .config import BALE_TOKEN
 from .handlers import handle_start, handle_text
@@ -11,26 +12,32 @@ from .handlers import handle_start, handle_text
 bot = Bot(token=BALE_TOKEN)
 
 
+@bot.listen("on_before_ready")
+async def on_before_ready():
+    # اگر webhook قبلی ست شده باشد، polling کار نمی‌کند
+    try:
+        await bot.delete_webhook()
+        print("Webhook حذف شد — حالت polling فعال است.")
+    except Exception as e:
+        print("حذف webhook:", e)
+
+
 @bot.listen("on_ready")
 async def on_ready():
-    print(f"ربات {bot.user} آماده است!")
+    print(f"ربات آماده است: {bot.user}")
 
 
-@bot.handle(CommandHandler("start"))
-async def start_cmd(message: Message):
-    await handle_start(message)
-
-
-@bot.handle(CommandHandler("help"))
-async def help_cmd(message: Message):
-    await handle_start(message)
-
-
-@bot.handle(MessageHandler())
+@bot.event
 async def on_message(message: Message):
-    # فقط پیام‌های متنی
-    if message.content:
-        await handle_text(message)
+    content = (getattr(message, "content", None) or "").strip()
+    if not content:
+        return
+
+    if content in ("/start", "/help") or content.startswith("/start"):
+        await handle_start(message)
+        return
+
+    await handle_text(message)
 
 
 if __name__ == "__main__":
