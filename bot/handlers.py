@@ -1,10 +1,5 @@
 """
 هندلرهای پیام ربات طیبستان
-لینک فروشگاه روی دامنه اصلی: https://taiyebestan.ir
-
-نکته: python-bale-bot از WebAppInfo پشتیبانی نمی‌کند.
-برای مینی‌اپ واقعی، از BotFather → Bot Settings → Menu Button
-آدرس https://taiyebestan.ir را ست کنید.
 """
 from bale import Message, InlineKeyboardMarkup, InlineKeyboardButton
 
@@ -13,7 +8,6 @@ from .products import search_products, format_product_message
 
 
 def get_shop_keyboard() -> InlineKeyboardMarkup:
-    """دکمه لینک فروشگاه روی دامنه اصلی"""
     kb = InlineKeyboardMarkup()
     kb.add(
         InlineKeyboardButton(
@@ -32,10 +26,7 @@ async def handle_start(message: Message):
 
 async def handle_text(message: Message):
     query = (getattr(message, "content", None) or "").strip()
-    if not query:
-        return
-
-    if query.startswith("/"):
+    if not query or query.startswith("/"):
         return
 
     results = search_products(query, limit=5)
@@ -48,9 +39,10 @@ async def handle_text(message: Message):
         )
         return
 
-    reply_parts = [f"🔍 نتایج جستجو برای «{query}»:\n"]
-    for p in results:
-        reply_parts.append(format_product_message(p))
-        reply_parts.append("")
+    parts = [f"🔍 نتایج برای «{query}»:\n"]
+    for i, p in enumerate(results, 1):
+        parts.append(format_product_message(p))
+        if i < len(results):
+            parts.append("────────")
 
-    await message.reply("\n".join(reply_parts), components=get_shop_keyboard())
+    await message.reply("\n".join(parts), components=get_shop_keyboard())
