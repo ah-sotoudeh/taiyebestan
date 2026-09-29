@@ -1,17 +1,18 @@
 """
-ربات طیبستان — فقط polling
-اجرا:
-    python -u -m bot.main
+ربات طیبستان — polling
+اجرا: python -u -m bot.main
 """
 import sys
 from bale import Bot, Message
 
 from .config import BALE_TOKEN
-from .handlers import handle_start, handle_text
+from .handlers import handle_start, handle_text, handle_callback
+
 
 def log(*a):
     sys.stdout.write(" ".join(map(str, a)) + "\n")
     sys.stdout.flush()
+
 
 bot = Bot(token=BALE_TOKEN)
 
@@ -35,12 +36,18 @@ async def on_message(message: Message):
     content = (getattr(message, "content", None) or "").strip()
     if not content:
         return
-
     if content in ("/start", "/help") or content.startswith("/start"):
         await handle_start(message)
         return
-
     await handle_text(message)
+
+
+@bot.listen("on_callback")
+async def on_callback(callback):
+    try:
+        await handle_callback(callback)
+    except Exception as e:
+        log("callback error:", e)
 
 
 if __name__ == "__main__":
