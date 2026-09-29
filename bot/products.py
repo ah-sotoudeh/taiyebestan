@@ -32,9 +32,23 @@ ATTR_ORDER = [
     ("احساس", "❤️"),
 ]
 
+# کلیدواژه‌های نوع محصول در نام / دسته
+TYPE_KEYWORDS = [
+    "عطر", "روغن", "حرز", "دمنوش", "بخور", "عود",
+    "اسپری", "کرم", "شامپو", "صابون", "آبزن", "ملکه",
+]
+
+# عبارات رایج طبیعت (مزاج)
+NATURE_PHRASES = [
+    "گرم و تر", "گرم وتر", "گرم‌وتر",
+    "گرم و خشک", "گرم وخشک", "گرم‌و‌خشک",
+    "سرد و تر", "سرد وتر", "سرد‌وتر",
+    "سرد و خشک", "سرد وخشک", "سرد‌و‌خشک",
+    "درجه اول", "درجه دوم", "درجه سوم",
+]
+
 
 def to_fa_digits(value) -> str:
-    """تبدیل اعداد انگلیسی به فارسی"""
     return str(value).translate(_FA_DIGITS)
 
 
@@ -386,37 +400,170 @@ def find_category_by_name(name: str) -> Optional[Dict]:
     return None
 
 
-def search_products(query: str, limit: int = 5) -> List[Dict]:
+def _product_search_blob(p: Dict) -> str:
+    """متن یکپارچه برای جستجو: نام + دسته + همه ویژگی‌ها"""
+    parts = [
+        p.get("name") or "",
+        clean_name(p.get("name") or ""),
+    ]
+    for c in p.get("categories") or []:
+        parts.append(c.get("name") or "")
+    for a in p.get("attributes") or []:
+        parts.append(a.get("name") or "")
+        parts.append(a.get("value") or "")
+    return " ".join(parts).lower()
+
+
+def _normalize_query(q: str) -> str:
+    q = q.strip().lstrip("/").lower()
+    q = q.replace("‌", "")  # حذف نیم‌فاصله
+    q = re.sub(r"\s+", " ", q)
+    return q
+
+
+def _extract_type_filter(q: str) -> Tuple[Optional[str], str]:
+    """اگر نوع محصول در کوئری بود جدا کن (عطر / روغن / …)"""
+    for t in TYPE_KEYWORDS:
+        if t in q:
+            rest = q.replace(t, " ").strip()
+            rest = re.sub(r"\s+", " ", rest)
+            return t, rest
+    return None, q
+
+
+def _extract_nature_phrases(q: str) -> Tuple[List[str], str]:
+    """عبارات طبیعت را پیدا کن"""
+    found = []
+    rest = q
+    # اول عبارات چندکلمه‌ای
+    for phrase in sorted(NATURE_PHRASES, key=len, reverse=True):
+        norm_phrase = phrase.replace("‌", "").replace(" ", "")
+        norm_rest = rest.replace("‌", "").replace(" ", "")
+        if phrase in rest or norm_phrase in norm_rest:
+            found.append(phrase.replace("‌", " ").replace("  ", " "))
+            rest = rest.replace(phrase, " ")
+            # حالت بدون فاصله
+            for variant in (phrase, phrase.replace(" ", ""), phrase.replace(" و ", " و")):
+                rest = rest.replace(variant, " ")
+    rest = re.sub(r"\s+", " ", rest).strip()
+    return found, rest
+
+
+def _matches_type(p: Dict, type_kw: str) -> bool:
+    blob = _product_search_blob(p)
+    return type_kw in blob
+
+
+def _matches_nature(p: Dict, phrases: List[str]) -> bool:
+    if not phrases:
+        return True
+    # فقط روی ویژگی طبیعت (و در صورت نبود، کل blob)
+    nature_vals = []
+    for a in p.get("attributes") or []:
+        an = (a.get("name") or "").lower()
+        if "طبیعت" in an or "مزاج" in an:
+            nature_vals.append((a.get("value") or "").lower())
+    target = " ".join(nature_vals) if nature_vals else _product_search_blob(p)
+    target_compact = target.replace(" ", "").replace("‌", "")
+    for ph in phrases:
+        ph_l = ph.lower()
+        ph_c = ph_l.replace(" ", "").replace("‌", "")
+        if ph_l in target or ph_c in target_compact:
+            return True
+        # گرم + تر جدا
+        tokens = [t for t in re.split(r"\s+و\s+|\s+", ph_l) if t and t != "و"]
+        if tokens and all(t in target for t in tokens):
+            return True
+    return False
+
+
+def _score_product(p: Dict, tokens: List[str], full_q: str) -> int:
+    """امتیاز تطبیق روی نام و ویژگی‌ها (خواص، ترکیبات، …)"""
+    if not tokens and not full_q:
+        return 50
+    blob = _product_search_blob(p)
+    name = (p.get("name") or "").lower()
+    score = 0
+
+    if full_q and full_q in blob:
+        score += 40
+    if full_q and full_q in name:
+        score += 30
+
+    for t in tokens:
+        if len(t) < 2:
+            continue
+        if t in name:
+            score += 25
+        elif t in blob:
+            score += 15
+        else:
+            # fuzzy سبک روی نام
+            if fuzz.partial_ratio(t, name) >= 80:
+                score += 10
+
+    return score
+
+
+def search_products(query: str, limit: int = 20) -> List[Dict]:
+    """
+    جستجوی هوشمند:
+    - نام محصول
+    - طبیعت (گرم و تر، …)
+    - خواص درمانی و بقیه ویژگی‌ها
+    - نوع: عطر / روغن / حرز / …
+    """
     products = load_products()
-    q = (query or "").strip()
-    if not products or not q:
+    q_raw = (query or "").strip()
+    if not products or not q_raw:
         return []
 
-    m = re.match(r"^/?p?(\d+)$", q, re.I)
+    m = re.match(r"^/?p?(\d+)$", q_raw, re.I)
     if m:
         p = get_product_by_id(int(m.group(1)))
         return [p] if p else []
 
-    q_norm = q.lstrip("/").lower()
-    exact = []
-    for p in products:
-        name = (p.get("name") or "").lower()
-        if q_norm in name or q_norm in clean_name(p.get("name") or "").lower():
-            item = p.copy()
-            item["_score"] = 100
-            exact.append(item)
-    if exact:
-        exact.sort(key=lambda x: len(x.get("name", "")))
-        return exact[:limit]
+    q = _normalize_query(q_raw)
+    type_kw, q = _extract_type_filter(q)
+    nature_phrases, q = _extract_nature_phrases(q)
+    tokens = [t for t in re.split(r"[\s،,]+", q) if len(t) >= 2]
 
+    scored = []
+    for p in products:
+        if type_kw and not _matches_type(p, type_kw):
+            continue
+        if nature_phrases and not _matches_nature(p, nature_phrases):
+            continue
+
+        # اگر فقط نوع یا طبیعت بود، همهٔ فیلترشده را بیاور
+        if not tokens and (type_kw or nature_phrases):
+            item = p.copy()
+            item["_score"] = 60
+            scored.append(item)
+            continue
+
+        if not tokens and not type_kw and not nature_phrases:
+            continue
+
+        sc = _score_product(p, tokens, q)
+        if sc <= 0:
+            continue
+        item = p.copy()
+        item["_score"] = sc
+        scored.append(item)
+
+    if scored:
+        scored.sort(key=lambda x: (-x.get("_score", 0), len(x.get("name") or "")))
+        return scored[:limit]
+
+    # fallback: fuzzy فقط روی نام (رفتار قبلی)
     names = [p.get("name", "") for p in products]
-    cutoff = 80 if len(q_norm) <= 3 else 70
-    results = process.extract(q_norm, names, scorer=fuzz.partial_ratio, limit=limit * 3, score_cutoff=cutoff)
-    if not results:
-        results = process.extract(q_norm, names, scorer=fuzz.WRatio, limit=limit * 3, score_cutoff=cutoff)
+    cutoff = 80 if len(q_raw) <= 3 else 70
+    results = process.extract(
+        q_raw, names, scorer=fuzz.partial_ratio, limit=limit * 2, score_cutoff=cutoff,
+    )
     if not results:
         return []
-
     best = results[0][1]
     matched = []
     for name, score, idx in results:
