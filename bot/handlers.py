@@ -17,9 +17,8 @@ from .products import (
     paginate,
     PAGE_SIZE,
     to_fa_digits,
-    fetch_product_reviews,
-    format_reviews_instant_view,
 )
+from .reviews_helper import fetch_product_reviews, format_reviews_instant_view
 
 API = f"https://tapi.bale.ai/bot{BALE_TOKEN}"
 
@@ -63,7 +62,6 @@ def short_list_keyboard(products, page: int, total_pages: int, prefix: str):
             "callback_data": f"prod:{p.get('id')}",
         }])
 
-    # جای دکمه‌ها: قبلی | صفحه | بعدی
     nav = []
     if page > 0:
         nav.append({"text": "قبلی ➡️", "callback_data": f"{prefix}:{page - 1}"})
