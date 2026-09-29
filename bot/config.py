@@ -15,7 +15,7 @@ PRODUCTS_CACHE = os.getenv("PRODUCTS_CACHE", "products.json")
 CATEGORIES_CACHE = os.getenv("CATEGORIES_CACHE", "categories.json")
 
 WELCOME_MESSAGE = """سلام {name} عزیز 🌿
-به ربات فروشگاه طیبستان خوش آمدید!
+به *بازو فروشگاه طیبستان* خوش آمدید!
 
 🔍 نام محصول را بنویسید (حتی بخشی از نام)
 ⭐ محبوب‌ترین‌ها را ببینید
