@@ -14,6 +14,17 @@ WC_SECRET = os.getenv("WC_SECRET", "")
 PRODUCTS_CACHE = os.getenv("PRODUCTS_CACHE", "products.json")
 CATEGORIES_CACHE = os.getenv("CATEGORIES_CACHE", "categories.json")
 
+# کانال ارسال خودکار (مثلاً @linktest یا آیدی عددی)
+CHANNEL_ID = os.getenv("CHANNEL_ID", "@linktest")
+# تعداد محصول در هر اجرای کرون
+CHANNEL_POSTS_PER_RUN = int(os.getenv("CHANNEL_POSTS_PER_RUN", "2"))
+# فایل وضعیت ارسال‌شده‌ها
+CHANNEL_STATE_FILE = os.getenv("CHANNEL_STATE_FILE", "channel_posted.json")
+# صف دستی (اختیاری): لیست id محصول
+CHANNEL_QUEUE_FILE = os.getenv("CHANNEL_QUEUE_FILE", "channel_queue.json")
+# روش انتخاب: rotate | top_rated | queue
+CHANNEL_PICK_MODE = os.getenv("CHANNEL_PICK_MODE", "rotate")
+
 WELCOME_MESSAGE = """سلام {name} عزیز 🌿
 به *بازو فروشگاه طیبستان* خوش آمدید!
 
