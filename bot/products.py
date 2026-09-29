@@ -18,18 +18,18 @@ from .config import (
 CACHE_TTL_SECONDS = int(os.getenv("CACHE_TTL_SECONDS", "3600"))
 PAGE_SIZE = 8
 
-ATTR_EMOJI = {
-    "طبیعت": "🌿",
-    "ستاره": "⭐",
-    "مزاج": "⭐",
-    "شروع مصرف": "📅",
-    "ترکیبات": "🧪",
-    "خواص درمانی": "✅",
-    "خواص": "✅",
-    "احساس": "❤️",
-    "خلوص": "✨",
-    "خلوص و ترکیبات": "✨",
-}
+# ترتیب و شکلک استاندارد نمایش ویژگی‌ها
+ATTR_ORDER = [
+    ("طبیعت", "🌱"),
+    ("ستاره", "⭐️"),
+    ("مزاج", "⭐️"),
+    ("شروع مصرف", "🗓️"),
+    ("ترکیبات", "🧪"),
+    ("خلوص", "💧"),
+    ("خواص درمانی", "✅"),
+    ("خواص", "✅"),
+    ("احساس", "❤️"),
+]
 
 
 def _auth():
@@ -43,12 +43,22 @@ def _cache_fresh(path: str) -> bool:
 
 
 def clean_name(name: str) -> str:
-    """حذف کلمه طیبستان از نام نمایشی"""
     if not name:
         return "محصول"
     n = re.sub(r"\s*طیبستان\s*", " ", name)
     n = re.sub(r"\s+", " ", n).strip(" -–|،,")
     return n or name.strip()
+
+
+def _strip_emoji(text: str) -> str:
+    if not text:
+        return ""
+    # حذف شکلک‌های رایج از ابتدای/داخل عنوان ویژگی
+    return re.sub(
+        r"[🌱🌿⭐️⭐☆📅🗓️🧪✅✔️❤️❤✨💧🍃🚫🛍📦•]+\s*",
+        "",
+        text,
+    ).strip()
 
 
 def _format_price(price) -> str:
@@ -65,31 +75,12 @@ def _format_price(price) -> str:
         return s
 
 
-def _stars_full(rating: float) -> str:
-    try:
-        r = float(rating)
-    except Exception:
-        return ""
-    full = max(0, min(5, int(round(r))))
-    return "⭐" * full + "☆" * (5 - full) + f" ({r:.1f})"
-
-
-def _attr_emoji(name: str) -> str:
-    n = (name or "").strip()
-    for key, emo in ATTR_EMOJI.items():
-        if key in n:
-            return emo
-    return "•"
-
-
 def _parse_attributes(item: Dict) -> List[Dict]:
-    """ویژگی‌های قابل‌نمایش محصول (مثل طبیعت، خواص، …)"""
     result = []
     for a in item.get("attributes") or []:
-        # تنوع‌سازها را در جزئیات جدا نشان می‌دهیم
         if a.get("variation"):
             continue
-        name = (a.get("name") or "").strip()
+        name = _strip_emoji((a.get("name") or "").strip())
         options = a.get("options") or []
         if not name or not options:
             continue
@@ -106,6 +97,18 @@ def _variation_label(variation: Dict) -> str:
     if parts:
         return " / ".join(parts)
     return variation.get("sku") or "تنوع"
+
+
+def _variation_sort_key(v: Dict) -> float:
+    """مرتب‌سازی بر اساس عدد حجم (میل)"""
+    label = v.get("label") or ""
+    m = re.search(r"(\d+(?:[./]\d+)?)", label.replace("/", "."))
+    if m:
+        try:
+            return float(m.group(1).replace("/", "."))
+        except ValueError:
+            pass
+    return 9999
 
 
 def fetch_variations(product_id: int) -> List[Dict]:
@@ -138,6 +141,7 @@ def fetch_variations(product_id: int) -> List[Dict]:
         if len(batch) < 100:
             break
         page += 1
+    variations.sort(key=_variation_sort_key)
     return variations
 
 
@@ -358,7 +362,6 @@ def get_by_category(category_id: int, limit: int = 100) -> List[Dict]:
 
 
 def paginate(items: List, page: int, page_size: int = PAGE_SIZE) -> Tuple[List, int, int]:
-    """برمی‌گرداند: صفحه فعلی، شماره صفحه (از ۰)، تعداد کل صفحات"""
     total = len(items)
     total_pages = max(1, (total + page_size - 1) // page_size)
     page = max(0, min(page, total_pages - 1))
@@ -422,37 +425,99 @@ def search_products(query: str, limit: int = 5) -> List[Dict]:
     return matched
 
 
+def _ordered_attributes(attrs: List[Dict]) -> List[Tuple[str, str, str]]:
+    """
+    برمی‌گرداند لیست (emoji, label, value) با ترتیب ثابت و بدون تکرار شکلک.
+    """
+    used = set()
+    ordered = []
+
+    def match_key(attr_name: str, key: str) -> bool:
+        an = attr_name.replace(" و ", " ")
+        return key in an
+
+    for key, emo in ATTR_ORDER:
+        for a in attrs:
+            an = a.get("name") or ""
+            if an in used:
+                continue
+            if match_key(an, key):
+                # برچسب تمیز
+                label = key if key != "مزاج" else "ستاره"
+                if key == "خواص":
+                    label = "خواص درمانی"
+                if "خلوص" in an:
+                    label = "خلوص"
+                ordered.append((emo, label, a.get("value") or ""))
+                used.add(an)
+                break
+
+    # بقیه ویژگی‌های ناشناخته
+    for a in attrs:
+        an = a.get("name") or ""
+        if an not in used:
+            ordered.append(("•", an, a.get("value") or ""))
+            used.add(an)
+
+    return ordered
+
+
 def format_product_message(product: Dict) -> str:
+    """
+    قالب استاندارد:
+
+    🛍 عطر ایران  ⭐ 4.8  (از 34 دیدگاه)
+
+    🌱 طبیعت: ...
+    ⭐️ ستاره: ...
+    ...
+    📦 تنوع‌ها و قیمت:
+    • 1 میل: ...
+    """
     name = clean_name(product.get("name", "محصول"))
-    lines = [f"🛍 {name}"]
+    lines = []
 
     avg = product.get("average_rating") or 0
     rcount = product.get("rating_count") or 0
-    if avg and rcount:
-        lines.append(f"{_stars_full(avg)} — {rcount} دیدگاه")
+    try:
+        avg_f = float(avg)
+    except Exception:
+        avg_f = 0
 
-    # ویژگی‌ها مثل سایت (هر کدام یک خط)
-    for attr in product.get("attributes") or []:
-        an = attr.get("name") or ""
-        av = attr.get("value") or ""
-        emo = _attr_emoji(an)
-        lines.append(f"{emo} {an}: {av}")
+    if avg_f > 0 and rcount:
+        lines.append(f"🛍 {name}  ⭐ {avg_f:.1f}  (از {rcount} دیدگاه)")
+    elif avg_f > 0:
+        lines.append(f"🛍 {name}  ⭐ {avg_f:.1f}")
+    else:
+        lines.append(f"🛍 {name}")
 
-    variations = product.get("variations") or []
+    lines.append("")
+
+    attrs = product.get("attributes") or []
+    for emo, label, value in _ordered_attributes(attrs):
+        # فاصله قبل از خواص و احساس برای خوانایی
+        if label in ("خواص درمانی", "احساس"):
+            lines.append("")
+        lines.append(f"{emo} {label}: {value}")
+
+    variations = list(product.get("variations") or [])
     if variations:
+        variations = sorted(variations, key=_variation_sort_key)
+        lines.append("")
         lines.append("📦 تنوع‌ها و قیمت:")
         for v in variations:
             label = v.get("label") or "تنوع"
             price = _format_price(v.get("price", ""))
             stock_note = " ❌ ناموجود" if not v.get("in_stock", True) else ""
             if price:
-                lines.append(f"  • {label}: {price}{stock_note}")
+                lines.append(f"• {label}: {price}{stock_note}")
             else:
-                lines.append(f"  • {label}{stock_note}")
+                lines.append(f"• {label}{stock_note}")
     else:
         price = _format_price(product.get("price", ""))
         if price:
             stock = "" if product.get("in_stock", True) else " (ناموجود)"
+            lines.append("")
             lines.append(f"💰 قیمت: {price}{stock}")
 
     return "\n".join(lines)
