@@ -17,6 +17,8 @@ from .products import (
     paginate,
     PAGE_SIZE,
     to_fa_digits,
+    fetch_product_reviews,
+    format_reviews_instant_view,
 )
 
 API = f"https://tapi.bale.ai/bot{BALE_TOKEN}"
@@ -61,17 +63,17 @@ def short_list_keyboard(products, page: int, total_pages: int, prefix: str):
             "callback_data": f"prod:{p.get('id')}",
         }])
 
-    # RTL: بعدی سمت راست ظاهر، قبلی سمت چپ — فلش‌ها جابه‌جا
+    # جای دکمه‌ها: قبلی | صفحه | بعدی
     nav = []
-    if page < total_pages - 1:
-        nav.append({"text": "بعدی ⬅️", "callback_data": f"{prefix}:{page + 1}"})
+    if page > 0:
+        nav.append({"text": "قبلی ➡️", "callback_data": f"{prefix}:{page - 1}"})
     if total_pages > 1:
         nav.append({
             "text": f"{to_fa_digits(page + 1)}/{to_fa_digits(total_pages)}",
             "callback_data": "noop",
         })
-    if page > 0:
-        nav.append({"text": "قبلی ➡️", "callback_data": f"{prefix}:{page - 1}"})
+    if page < total_pages - 1:
+        nav.append({"text": "بعدی ⬅️", "callback_data": f"{prefix}:{page + 1}"})
     if nav:
         rows.append(nav)
 
@@ -87,19 +89,26 @@ def detail_keyboard(product):
     name = clean_name(product.get("name") or "محصول")
     label = name if len(name) <= 35 else name[:32] + "..."
     url = product.get("url") or SITE_URL
-    return {
-        "inline_keyboard": [
-            [{
-                "text": f"مشاهده «{label}» در فروشگاه",
-                "web_app": {"url": url},
-            }],
-            [
-                {"text": "⭐ محبوب‌ترین‌ها", "callback_data": "popular:0"},
-                {"text": "📂 دسته‌ها", "callback_data": "categories"},
-            ],
-            [{"text": "🏠 منوی اصلی", "callback_data": "home"}],
-        ]
-    }
+    pid = product.get("id")
+    rcount = product.get("rating_count") or 0
+
+    rows = [
+        [{
+            "text": f"مشاهده «{label}» در فروشگاه",
+            "web_app": {"url": url},
+        }],
+    ]
+    if rcount and pid:
+        rows.append([{
+            "text": f"💬 مشاهده دیدگاه‌ها ({to_fa_digits(rcount)})",
+            "callback_data": f"reviews:{pid}",
+        }])
+    rows.append([
+        {"text": "⭐ محبوب‌ترین‌ها", "callback_data": "popular:0"},
+        {"text": "📂 دسته‌ها", "callback_data": "categories"},
+    ])
+    rows.append([{"text": "🏠 منوی اصلی", "callback_data": "home"}])
+    return {"inline_keyboard": rows}
 
 
 def categories_keyboard(cats):
@@ -158,6 +167,25 @@ def _send_short_list(chat_id, title: str, all_products: list, page: int, prefix:
 
 def _send_product_detail(chat_id, product):
     send_text(chat_id, format_product_message(product), reply_markup=detail_keyboard(product))
+
+
+def _send_reviews(chat_id, product_id: int):
+    product = get_product_by_id(product_id)
+    if not product:
+        send_text(chat_id, "محصول پیدا نشد.", reply_markup=main_menu_keyboard())
+        return
+
+    reviews = fetch_product_reviews(product_id)
+    if not reviews:
+        send_text(
+            chat_id,
+            f"برای «{clean_name(product.get('name') or '')}» هنوز دیدگاهی ثبت نشده.",
+            reply_markup=detail_keyboard(product),
+        )
+        return
+
+    text = format_reviews_instant_view(product, reviews)
+    send_text(chat_id, text, reply_markup=detail_keyboard(product))
 
 
 async def handle_start(message: Message):
@@ -274,6 +302,13 @@ async def handle_callback(callback):
             page = int(parts[2]) if len(parts) > 2 else 0
             await handle_category(chat_id, cat_id, page)
         except (IndexError, ValueError):
+            pass
+        return
+
+    if data.startswith("reviews:"):
+        try:
+            _send_reviews(chat_id, int(data.split(":", 1)[1]))
+        except ValueError:
             pass
         return
 
