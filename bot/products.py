@@ -5,6 +5,7 @@ import json
 import os
 import time
 import re
+import math
 from typing import List, Dict, Optional
 from rapidfuzz import fuzz, process
 import requests
@@ -42,14 +43,12 @@ def _format_price(price) -> str:
         return s
 
 
-def _stars(rating: float) -> str:
-    """نمایش ستاره از روی میانگین"""
+def _stars_full(rating: float) -> str:
     try:
         r = float(rating)
     except Exception:
         return ""
-    full = int(round(r))
-    full = max(0, min(5, full))
+    full = max(0, min(5, int(round(r))))
     return "⭐" * full + "☆" * (5 - full) + f" ({r:.1f})"
 
 
@@ -115,7 +114,6 @@ def fetch_categories() -> List[Dict]:
         if not batch:
             break
         for c in batch:
-            # رد کردن uncategorized
             slug = (c.get("slug") or "").lower()
             if slug in ("uncategorized", "بدون-دسته", "without-category"):
                 continue
@@ -163,7 +161,6 @@ def fetch_from_woocommerce() -> List[Dict]:
             name = item.get("name") or ""
             price = item.get("price") or item.get("regular_price") or ""
             ptype = item.get("type") or "simple"
-            short_desc = re.sub(r"<[^>]+", "", item.get("short_description") or "").strip()
             short_desc = re.sub(r"<[^>]+>", "", item.get("short_description") or "").strip()
             if len(short_desc) > 120:
                 short_desc = short_desc[:117] + "..."
@@ -256,18 +253,53 @@ def get_categories() -> List[Dict]:
     return sync_categories(force=False)
 
 
-def get_top_rated(limit: int = 8) -> List[Dict]:
-    """محبوب‌ترین‌ها بر اساس میانگین ستاره و تعداد نظر"""
+def get_product_by_id(product_id: int) -> Optional[Dict]:
+    for p in load_products():
+        if p.get("id") == product_id:
+            return p
+    return None
+
+
+def _bayesian_score(avg: float, count: int, global_mean: float, m: float = 10.0) -> float:
+    """
+    میانگین بیزی: محصول با نظرات بیشتر وزن بیشتری می‌گیرد.
+    m = حداقل نظرات برای اعتماد کامل به میانگین.
+    مثال: ۱ نظر ۵ ستاره < ۱۰۰ نظر ۴.۸ ستاره
+    """
+    v = float(count)
+    R = float(avg)
+    C = float(global_mean)
+    return (v / (v + m)) * R + (m / (v + m)) * C
+
+
+def get_top_rated(limit: int = 10) -> List[Dict]:
+    """محبوب‌ترین‌ها با وزن تعداد نظرات (Bayesian average)"""
     products = load_products()
-    rated = [p for p in products if (p.get("rating_count") or 0) > 0 and (p.get("average_rating") or 0) > 0]
-    rated.sort(
-        key=lambda p: (float(p.get("average_rating") or 0), int(p.get("rating_count") or 0)),
-        reverse=True,
-    )
+    rated = [
+        p for p in products
+        if (p.get("rating_count") or 0) > 0 and (p.get("average_rating") or 0) > 0
+    ]
+    if not rated:
+        return []
+
+    # میانگین سراسری
+    total_r = sum(float(p.get("average_rating") or 0) * int(p.get("rating_count") or 0) for p in rated)
+    total_c = sum(int(p.get("rating_count") or 0) for p in rated)
+    global_mean = (total_r / total_c) if total_c else 4.0
+
+    for p in rated:
+        p["_popularity"] = _bayesian_score(
+            float(p.get("average_rating") or 0),
+            int(p.get("rating_count") or 0),
+            global_mean,
+            m=10.0,
+        )
+
+    rated.sort(key=lambda p: p.get("_popularity", 0), reverse=True)
     return rated[:limit]
 
 
-def get_by_category(category_id: int, limit: int = 10) -> List[Dict]:
+def get_by_category(category_id: int, limit: int = 15) -> List[Dict]:
     products = load_products()
     matched = []
     for p in products:
@@ -275,11 +307,20 @@ def get_by_category(category_id: int, limit: int = 10) -> List[Dict]:
             if c.get("id") == category_id:
                 matched.append(p)
                 break
-    # مرتب‌سازی: امتیاز بالاتر اول
-    matched.sort(
-        key=lambda p: (float(p.get("average_rating") or 0), int(p.get("rating_count") or 0)),
-        reverse=True,
-    )
+
+    rated = [p for p in matched if (p.get("rating_count") or 0) > 0]
+    if rated:
+        total_r = sum(float(p.get("average_rating") or 0) * int(p.get("rating_count") or 0) for p in rated)
+        total_c = sum(int(p.get("rating_count") or 0) for p in rated)
+        global_mean = (total_r / total_c) if total_c else 4.0
+        for p in matched:
+            avg = float(p.get("average_rating") or 0)
+            cnt = int(p.get("rating_count") or 0)
+            p["_popularity"] = _bayesian_score(avg, cnt, global_mean, m=5.0) if cnt else 0
+        matched.sort(key=lambda p: p.get("_popularity", 0), reverse=True)
+    else:
+        matched.sort(key=lambda p: p.get("name") or "")
+
     return matched[:limit]
 
 
@@ -301,7 +342,13 @@ def search_products(query: str, limit: int = 5) -> List[Dict]:
     if not products or not q:
         return []
 
-    q_norm = q.lower()
+    # دستور /p123 یا /123
+    m = re.match(r"^/?p?(\d+)$", q, re.I)
+    if m:
+        p = get_product_by_id(int(m.group(1)))
+        return [p] if p else []
+
+    q_norm = q.lstrip("/").lower()
     exact = []
     for p in products:
         if q_norm in (p.get("name") or "").lower():
@@ -313,10 +360,10 @@ def search_products(query: str, limit: int = 5) -> List[Dict]:
         return exact[:limit]
 
     names = [p.get("name", "") for p in products]
-    cutoff = 80 if len(q) <= 3 else 70
-    results = process.extract(q, names, scorer=fuzz.partial_ratio, limit=limit * 3, score_cutoff=cutoff)
+    cutoff = 80 if len(q_norm) <= 3 else 70
+    results = process.extract(q_norm, names, scorer=fuzz.partial_ratio, limit=limit * 3, score_cutoff=cutoff)
     if not results:
-        results = process.extract(q, names, scorer=fuzz.WRatio, limit=limit * 3, score_cutoff=cutoff)
+        results = process.extract(q_norm, names, scorer=fuzz.WRatio, limit=limit * 3, score_cutoff=cutoff)
     if not results:
         return []
 
@@ -333,14 +380,28 @@ def search_products(query: str, limit: int = 5) -> List[Dict]:
     return matched
 
 
+def format_product_short(product: Dict) -> str:
+    """فقط نام + یک ستاره و میانگین"""
+    name = product.get("name", "محصول")
+    avg = product.get("average_rating") or 0
+    try:
+        avg_f = float(avg)
+    except Exception:
+        avg_f = 0
+    if avg_f > 0:
+        return f"{name}  ⭐ {avg_f:.1f}"
+    return name
+
+
 def format_product_message(product: Dict) -> str:
+    """جزئیات کامل: توضیح + تنوع + قیمت"""
     name = product.get("name", "محصول")
     lines = [f"🛍 {name}"]
 
     avg = product.get("average_rating") or 0
     rcount = product.get("rating_count") or 0
     if avg and rcount:
-        lines.append(f"{_stars(avg)} — {rcount} دیدگاه")
+        lines.append(f"{_stars_full(avg)} — {rcount} دیدگاه")
 
     desc = product.get("short_description") or ""
     if desc:
