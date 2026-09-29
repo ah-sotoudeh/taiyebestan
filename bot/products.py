@@ -18,7 +18,6 @@ from .config import (
 CACHE_TTL_SECONDS = int(os.getenv("CACHE_TTL_SECONDS", "3600"))
 PAGE_SIZE = 8
 
-# ترتیب و شکلک استاندارد نمایش ویژگی‌ها
 ATTR_ORDER = [
     ("طبیعت", "🌱"),
     ("ستاره", "⭐️"),
@@ -53,7 +52,6 @@ def clean_name(name: str) -> str:
 def _strip_emoji(text: str) -> str:
     if not text:
         return ""
-    # حذف شکلک‌های رایج از ابتدای/داخل عنوان ویژگی
     return re.sub(
         r"[🌱🌿⭐️⭐☆📅🗓️🧪✅✔️❤️❤✨💧🍃🚫🛍📦•]+\s*",
         "",
@@ -100,7 +98,6 @@ def _variation_label(variation: Dict) -> str:
 
 
 def _variation_sort_key(v: Dict) -> float:
-    """مرتب‌سازی بر اساس عدد حجم (میل)"""
     label = v.get("label") or ""
     m = re.search(r"(\d+(?:[./]\d+)?)", label.replace("/", "."))
     if m:
@@ -426,9 +423,6 @@ def search_products(query: str, limit: int = 5) -> List[Dict]:
 
 
 def _ordered_attributes(attrs: List[Dict]) -> List[Tuple[str, str, str]]:
-    """
-    برمی‌گرداند لیست (emoji, label, value) با ترتیب ثابت و بدون تکرار شکلک.
-    """
     used = set()
     ordered = []
 
@@ -442,7 +436,6 @@ def _ordered_attributes(attrs: List[Dict]) -> List[Tuple[str, str, str]]:
             if an in used:
                 continue
             if match_key(an, key):
-                # برچسب تمیز
                 label = key if key != "مزاج" else "ستاره"
                 if key == "خواص":
                     label = "خواص درمانی"
@@ -452,7 +445,6 @@ def _ordered_attributes(attrs: List[Dict]) -> List[Tuple[str, str, str]]:
                 used.add(an)
                 break
 
-    # بقیه ویژگی‌های ناشناخته
     for a in attrs:
         an = a.get("name") or ""
         if an not in used:
@@ -464,15 +456,7 @@ def _ordered_attributes(attrs: List[Dict]) -> List[Tuple[str, str, str]]:
 
 def format_product_message(product: Dict) -> str:
     """
-    قالب استاندارد:
-
-    🛍 عطر ایران  ⭐ 4.8  (از 34 دیدگاه)
-
-    🌱 طبیعت: ...
-    ⭐️ ستاره: ...
-    ...
-    📦 تنوع‌ها و قیمت:
-    • 1 میل: ...
+    در بله متن بین * * درشت می‌شود.
     """
     name = clean_name(product.get("name", "محصول"))
     lines = []
@@ -485,39 +469,38 @@ def format_product_message(product: Dict) -> str:
         avg_f = 0
 
     if avg_f > 0 and rcount:
-        lines.append(f"🛍 {name}  ⭐ {avg_f:.1f}  (از {rcount} دیدگاه)")
+        lines.append(f"🛍 *{name}*  ⭐ {avg_f:.1f}  (از {rcount} دیدگاه)")
     elif avg_f > 0:
-        lines.append(f"🛍 {name}  ⭐ {avg_f:.1f}")
+        lines.append(f"🛍 *{name}*  ⭐ {avg_f:.1f}")
     else:
-        lines.append(f"🛍 {name}")
+        lines.append(f"🛍 *{name}*")
 
     lines.append("")
 
     attrs = product.get("attributes") or []
     for emo, label, value in _ordered_attributes(attrs):
-        # فاصله قبل از خواص و احساس برای خوانایی
         if label in ("خواص درمانی", "احساس"):
             lines.append("")
-        lines.append(f"{emo} {label}: {value}")
+        lines.append(f"{emo} *{label}:* {value}")
 
     variations = list(product.get("variations") or [])
     if variations:
         variations = sorted(variations, key=_variation_sort_key)
         lines.append("")
-        lines.append("📦 تنوع‌ها و قیمت:")
+        lines.append("📦 *تنوع‌ها و قیمت:*")
         for v in variations:
-            label = v.get("label") or "تنوع"
+            vlabel = v.get("label") or "تنوع"
             price = _format_price(v.get("price", ""))
             stock_note = " ❌ ناموجود" if not v.get("in_stock", True) else ""
             if price:
-                lines.append(f"• {label}: {price}{stock_note}")
+                lines.append(f"• {vlabel}: {price}{stock_note}")
             else:
-                lines.append(f"• {label}{stock_note}")
+                lines.append(f"• {vlabel}{stock_note}")
     else:
         price = _format_price(product.get("price", ""))
         if price:
             stock = "" if product.get("in_stock", True) else " (ناموجود)"
             lines.append("")
-            lines.append(f"💰 قیمت: {price}{stock}")
+            lines.append(f"💰 *قیمت:* {price}{stock}")
 
     return "\n".join(lines)
