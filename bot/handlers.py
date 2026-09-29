@@ -4,7 +4,10 @@
 import requests
 from bale import Message
 
-from .config import WELCOME_MESSAGE, SITE_URL, BALE_TOKEN
+from .config import (
+    WELCOME_MESSAGE, SITE_URL, BALE_TOKEN,
+    PROMPT_NAME_SEARCH, PROMPT_FEATURE_SEARCH,
+)
 from .products import (
     search_products,
     format_product_message,
@@ -22,6 +25,9 @@ from .reviews_helper import fetch_product_reviews, format_reviews_instant_view
 
 API = f"https://tapi.bale.ai/bot{BALE_TOKEN}"
 
+# حالت جستجوی هر کاربر: name | feature | None
+_user_mode = {}
+
 
 def main_menu_keyboard():
     return {
@@ -29,6 +35,10 @@ def main_menu_keyboard():
             [
                 {"text": "⭐ محبوب‌ترین‌ها", "callback_data": "popular:0"},
                 {"text": "📂 دسته‌بندی‌ها", "callback_data": "categories"},
+            ],
+            [
+                {"text": "🔍 جستجوی نام", "callback_data": "search_name"},
+                {"text": "🌿 جستجوی ویژگی", "callback_data": "search_feature"},
             ],
             [{"text": "🛒 فروشگاه", "web_app": {"url": SITE_URL}}],
         ]
@@ -79,6 +89,10 @@ def short_list_keyboard(products, page: int, total_pages: int, prefix: str):
         {"text": "⭐ محبوب‌ترین‌ها", "callback_data": "popular:0"},
         {"text": "📂 دسته‌ها", "callback_data": "categories"},
     ])
+    rows.append([
+        {"text": "🔍 نام", "callback_data": "search_name"},
+        {"text": "🌿 ویژگی", "callback_data": "search_feature"},
+    ])
     rows.append([{"text": "🏠 منوی اصلی", "callback_data": "home"}])
     return {"inline_keyboard": rows}
 
@@ -87,26 +101,23 @@ def detail_keyboard(product):
     name = clean_name(product.get("name") or "محصول")
     label = name if len(name) <= 35 else name[:32] + "..."
     url = product.get("url") or SITE_URL
-    pid = product.get("id")
-    rcount = product.get("rating_count") or 0
-
-    rows = [
-        [{
-            "text": f"مشاهده «{label}» در فروشگاه",
-            "web_app": {"url": url},
-        }],
-    ]
-    if rcount and pid:
-        rows.append([{
-            "text": f"💬 مشاهده دیدگاه‌ها ({to_fa_digits(rcount)})",
-            "callback_data": f"reviews:{pid}",
-        }])
-    rows.append([
-        {"text": "⭐ محبوب‌ترین‌ها", "callback_data": "popular:0"},
-        {"text": "📂 دسته‌ها", "callback_data": "categories"},
-    ])
-    rows.append([{"text": "🏠 منوی اصلی", "callback_data": "home"}])
-    return {"inline_keyboard": rows}
+    return {
+        "inline_keyboard": [
+            [{
+                "text": f"مشاهده «{label}» در فروشگاه",
+                "web_app": {"url": url},
+            }],
+            [
+                {"text": "⭐ محبوب‌ترین‌ها", "callback_data": "popular:0"},
+                {"text": "📂 دسته‌ها", "callback_data": "categories"},
+            ],
+            [
+                {"text": "🔍 نام", "callback_data": "search_name"},
+                {"text": "🌿 ویژگی", "callback_data": "search_feature"},
+            ],
+            [{"text": "🏠 منوی اصلی", "callback_data": "home"}],
+        ]
+    }
 
 
 def categories_keyboard(cats):
@@ -164,31 +175,18 @@ def _send_short_list(chat_id, title: str, all_products: list, page: int, prefix:
 
 
 def _send_product_detail(chat_id, product):
-    send_text(chat_id, format_product_message(product), reply_markup=detail_keyboard(product))
-
-
-def _send_reviews(chat_id, product_id: int):
-    product = get_product_by_id(product_id)
-    if not product:
-        send_text(chat_id, "محصول پیدا نشد.", reply_markup=main_menu_keyboard())
-        return
-
-    reviews = fetch_product_reviews(product_id)
-    if not reviews:
-        send_text(
-            chat_id,
-            f"برای «{clean_name(product.get('name') or '')}» هنوز دیدگاهی ثبت نشده.",
-            reply_markup=detail_keyboard(product),
-        )
-        return
-
-    text = format_reviews_instant_view(product, reviews)
+    reviews = []
+    if product.get("rating_count"):
+        reviews = fetch_product_reviews(product.get("id"))
+    text = format_product_message(product, reviews=reviews)
     send_text(chat_id, text, reply_markup=detail_keyboard(product))
 
 
 async def handle_start(message: Message):
+    chat_id = message.chat_id
+    _user_mode.pop(chat_id, None)
     name = getattr(message.author, "first_name", None) or "کاربر"
-    send_text(message.chat_id, WELCOME_MESSAGE.format(name=name), reply_markup=main_menu_keyboard())
+    send_text(chat_id, WELCOME_MESSAGE.format(name=name), reply_markup=main_menu_keyboard())
 
 
 async def handle_popular(chat_id, page: int = 0):
@@ -224,13 +222,27 @@ async def handle_text(message: Message):
     q = query.strip()
 
     if q in ("محبوب", "محبوب‌ترین", "محبوب ترین", "محبوب‌ترین‌ها"):
+        _user_mode.pop(chat_id, None)
         await handle_popular(chat_id, 0)
         return
     if q in ("دسته", "دسته‌بندی", "دسته بندی", "دسته‌ها"):
+        _user_mode.pop(chat_id, None)
         await handle_categories_list(chat_id)
         return
     if q in ("منو", "خانه", "menu", "home"):
         await handle_start(message)
+        return
+
+    mode = _user_mode.get(chat_id)
+
+    # بدون حالت انتخاب‌شده → راهنما
+    if mode not in ("name", "feature"):
+        send_text(
+            chat_id,
+            "لطفاً نوع جستجو را از دکمه‌ها انتخاب کنید:\n"
+            "🔍 جستجوی نام  یا  🌿 جستجوی ویژگی",
+            reply_markup=main_menu_keyboard(),
+        )
         return
 
     if q.startswith("/") and q[1:].lstrip("pP").isdigit():
@@ -239,21 +251,24 @@ async def handle_text(message: Message):
             _send_product_detail(chat_id, product)
             return
 
-    cat = find_category_by_name(q.lstrip("/"))
-    if cat:
-        await handle_category(chat_id, cat["id"], 0)
-        return
+    results = search_products(q, limit=20, mode=mode)
+    # حالت را نگه می‌داریم تا چند جستجوی پشت‌سرهم ممکن باشد
 
-    results = search_products(q, limit=20)
     if not results:
-        send_text(chat_id, f"متأسفانه محصولی با عنوان «{q}» پیدا نشد 😕", reply_markup=main_menu_keyboard())
+        hint = "نام دیگری" if mode == "name" else "ویژگی یا کاربرد دیگری"
+        send_text(
+            chat_id,
+            f"متأسفانه نتیجه‌ای برای «{q}» پیدا نشد 😕\n{hint} را امتحان کنید.",
+            reply_markup=main_menu_keyboard(),
+        )
         return
 
     if len(results) == 1:
         _send_product_detail(chat_id, results[0])
         return
 
-    _send_short_list(chat_id, f"🔍 نتایج «{q}»", results, 0, "search")
+    title = f"🔍 نتایج نام «{q}»" if mode == "name" else f"🌿 نتایج ویژگی «{q}»"
+    _send_short_list(chat_id, title, results, 0, f"srch_{mode}")
 
 
 async def handle_callback(callback):
@@ -274,18 +289,31 @@ async def handle_callback(callback):
         return
 
     if data == "home":
+        _user_mode.pop(chat_id, None)
         send_text(
             chat_id,
-            "منوی اصلی 🌿\nنام محصول را بنویسید یا یکی از گزینه‌ها را انتخاب کنید:",
+            "منوی اصلی 🌿\nیکی از گزینه‌ها را انتخاب کنید:",
             reply_markup=main_menu_keyboard(),
         )
         return
 
+    if data == "search_name":
+        _user_mode[chat_id] = "name"
+        send_text(chat_id, PROMPT_NAME_SEARCH, reply_markup=main_menu_keyboard())
+        return
+
+    if data == "search_feature":
+        _user_mode[chat_id] = "feature"
+        send_text(chat_id, PROMPT_FEATURE_SEARCH, reply_markup=main_menu_keyboard())
+        return
+
     if data == "categories":
+        _user_mode.pop(chat_id, None)
         await handle_categories_list(chat_id)
         return
 
     if data.startswith("popular:"):
+        _user_mode.pop(chat_id, None)
         try:
             page = int(data.split(":")[1])
         except (IndexError, ValueError):
@@ -294,19 +322,13 @@ async def handle_callback(callback):
         return
 
     if data.startswith("cat:"):
+        _user_mode.pop(chat_id, None)
         parts = data.split(":")
         try:
             cat_id = int(parts[1])
             page = int(parts[2]) if len(parts) > 2 else 0
             await handle_category(chat_id, cat_id, page)
         except (IndexError, ValueError):
-            pass
-        return
-
-    if data.startswith("reviews:"):
-        try:
-            _send_reviews(chat_id, int(data.split(":", 1)[1]))
-        except ValueError:
             pass
         return
 
