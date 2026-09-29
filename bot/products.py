@@ -18,6 +18,8 @@ from .config import (
 CACHE_TTL_SECONDS = int(os.getenv("CACHE_TTL_SECONDS", "3600"))
 PAGE_SIZE = 8
 
+_FA_DIGITS = str.maketrans("0123456789", "۰۱۲۳۴۵۶۷۸۹")
+
 ATTR_ORDER = [
     ("طبیعت", "🌱"),
     ("ستاره", "⭐️"),
@@ -29,6 +31,11 @@ ATTR_ORDER = [
     ("خواص", "✅"),
     ("احساس", "❤️"),
 ]
+
+
+def to_fa_digits(value) -> str:
+    """تبدیل اعداد انگلیسی به فارسی"""
+    return str(value).translate(_FA_DIGITS)
 
 
 def _auth():
@@ -67,10 +74,11 @@ def _format_price(price) -> str:
     try:
         num = float(re.sub(r"[^0-9.]", "", s.split("-")[0].strip()) or 0)
         if num <= 0:
-            return s
-        return f"{int(num):,}".replace(",", "٬") + " تومان"
+            return to_fa_digits(s)
+        formatted = f"{int(num):,}".replace(",", "٬") + " تومان"
+        return to_fa_digits(formatted)
     except Exception:
-        return s
+        return to_fa_digits(s)
 
 
 def _parse_attributes(item: Dict) -> List[Dict]:
@@ -455,9 +463,6 @@ def _ordered_attributes(attrs: List[Dict]) -> List[Tuple[str, str, str]]:
 
 
 def format_product_message(product: Dict) -> str:
-    """
-    در بله متن بین * * درشت می‌شود.
-    """
     name = clean_name(product.get("name", "محصول"))
     lines = []
 
@@ -469,9 +474,11 @@ def format_product_message(product: Dict) -> str:
         avg_f = 0
 
     if avg_f > 0 and rcount:
-        lines.append(f"🛍 *{name}*  ⭐ {avg_f:.1f}  (از {rcount} دیدگاه)")
+        lines.append(
+            f"🛍 *{name}*  ⭐ {to_fa_digits(f'{avg_f:.1f}')}  (از {to_fa_digits(rcount)} دیدگاه)"
+        )
     elif avg_f > 0:
-        lines.append(f"🛍 *{name}*  ⭐ {avg_f:.1f}")
+        lines.append(f"🛍 *{name}*  ⭐ {to_fa_digits(f'{avg_f:.1f}')}")
     else:
         lines.append(f"🛍 *{name}*")
 
@@ -481,7 +488,7 @@ def format_product_message(product: Dict) -> str:
     for emo, label, value in _ordered_attributes(attrs):
         if label in ("خواص درمانی", "احساس"):
             lines.append("")
-        lines.append(f"{emo} *{label}:* {value}")
+        lines.append(f"{emo} *{label}:* {to_fa_digits(value)}")
 
     variations = list(product.get("variations") or [])
     if variations:
@@ -489,7 +496,7 @@ def format_product_message(product: Dict) -> str:
         lines.append("")
         lines.append("📦 *تنوع‌ها و قیمت:*")
         for v in variations:
-            vlabel = v.get("label") or "تنوع"
+            vlabel = to_fa_digits(v.get("label") or "تنوع")
             price = _format_price(v.get("price", ""))
             stock_note = " ❌ ناموجود" if not v.get("in_stock", True) else ""
             if price:
