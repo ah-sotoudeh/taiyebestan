@@ -1,6 +1,5 @@
 """
 هندلرهای ربات طیبستان
-فهرست خلاصه → جزئیات با زدن روی محصول
 """
 import requests
 from bale import Message
@@ -9,12 +8,14 @@ from .config import WELCOME_MESSAGE, SITE_URL, BALE_TOKEN
 from .products import (
     search_products,
     format_product_message,
-    format_product_short,
+    clean_name,
     get_top_rated,
     get_categories,
     get_by_category,
     find_category_by_name,
     get_product_by_id,
+    paginate,
+    PAGE_SIZE,
 )
 
 API = f"https://tapi.bale.ai/bot{BALE_TOKEN}"
@@ -24,7 +25,7 @@ def main_menu_keyboard():
     return {
         "inline_keyboard": [
             [
-                {"text": "⭐ محبوب‌ترین‌ها", "callback_data": "popular"},
+                {"text": "⭐ محبوب‌ترین‌ها", "callback_data": "popular:0"},
                 {"text": "📂 دسته‌بندی‌ها", "callback_data": "categories"},
             ],
             [{"text": "🛒 فروشگاه", "web_app": {"url": SITE_URL}}],
@@ -32,31 +33,50 @@ def main_menu_keyboard():
     }
 
 
-def short_list_keyboard(products):
+def _btn_label(product) -> str:
+    """نام محصول، میانگین (تعداد نظر) — بدون طیبستان"""
+    name = clean_name(product.get("name") or "محصول")
+    avg = product.get("average_rating") or 0
+    cnt = product.get("rating_count") or 0
+    try:
+        avg_f = float(avg)
+    except Exception:
+        avg_f = 0
+    if avg_f > 0 and cnt:
+        label = f"{name}، {avg_f:.1f} ({cnt} نظر)"
+    elif avg_f > 0:
+        label = f"{name}، {avg_f:.1f}"
+    else:
+        label = name
+    if len(label) > 64:
+        label = label[:61] + "..."
+    return label
+
+
+def short_list_keyboard(products, page: int, total_pages: int, prefix: str):
     """
-    هر محصول یک دکمه: نام  ⭐ ۴.۸
-    با زدن → جزئیات کامل
+    prefix مثلاً popular یا cat:12
+    دکمه‌های محصول + صفحه‌بندی
     """
     rows = []
     for p in products:
-        name = (p.get("name") or "محصول").strip()
-        avg = p.get("average_rating") or 0
-        try:
-            avg_f = float(avg)
-        except Exception:
-            avg_f = 0
-        if avg_f > 0:
-            label = f"{name}  ⭐ {avg_f:.1f}"
-        else:
-            label = name
-        if len(label) > 60:
-            label = label[:57] + "..."
         rows.append([{
-            "text": label,
+            "text": _btn_label(p),
             "callback_data": f"prod:{p.get('id')}",
         }])
+
+    nav = []
+    if page > 0:
+        nav.append({"text": "⬅️ قبلی", "callback_data": f"{prefix}:{page - 1}"})
+    if total_pages > 1:
+        nav.append({"text": f"{page + 1}/{total_pages}", "callback_data": "noop"})
+    if page < total_pages - 1:
+        nav.append({"text": "بعدی ➡️", "callback_data": f"{prefix}:{page + 1}"})
+    if nav:
+        rows.append(nav)
+
     rows.append([
-        {"text": "⭐ محبوب‌ترین‌ها", "callback_data": "popular"},
+        {"text": "⭐ محبوب‌ترین‌ها", "callback_data": "popular:0"},
         {"text": "📂 دسته‌ها", "callback_data": "categories"},
     ])
     rows.append([{"text": "🏠 منوی اصلی", "callback_data": "home"}])
@@ -64,8 +84,7 @@ def short_list_keyboard(products):
 
 
 def detail_keyboard(product):
-    """فقط یک دکمه مینی‌اپ برای همان محصول"""
-    name = (product.get("name") or "محصول").strip()
+    name = clean_name(product.get("name") or "محصول")
     label = name if len(name) <= 35 else name[:32] + "..."
     url = product.get("url") or SITE_URL
     return {
@@ -75,7 +94,7 @@ def detail_keyboard(product):
                 "web_app": {"url": url},
             }],
             [
-                {"text": "⭐ محبوب‌ترین‌ها", "callback_data": "popular"},
+                {"text": "⭐ محبوب‌ترین‌ها", "callback_data": "popular:0"},
                 {"text": "📂 دسته‌ها", "callback_data": "categories"},
             ],
             [{"text": "🏠 منوی اصلی", "callback_data": "home"}],
@@ -91,7 +110,7 @@ def categories_keyboard(cats):
         label = name if len(name) <= 28 else name[:25] + "..."
         count = c.get("count") or 0
         text = f"{label}" + (f" ({count})" if count else "")
-        row.append({"text": text, "callback_data": f"cat:{c.get('id')}"})
+        row.append({"text": text, "callback_data": f"cat:{c.get('id')}:0"})
         if len(row) == 2:
             rows.append(row)
             row = []
@@ -122,31 +141,33 @@ def answer_callback(callback_query_id, text=None):
         pass
 
 
-def _send_short_list(chat_id, title: str, products: list):
-    if not products:
+def _send_short_list(chat_id, title: str, all_products: list, page: int, prefix: str):
+    if not all_products:
         send_text(chat_id, f"{title}\n\nمحصولی پیدا نشد.", reply_markup=main_menu_keyboard())
         return
-    # متن کوتاه + دکمه‌ها برای انتخاب
-    lines = [title, "", "روی نام محصول بزنید تا جزئیات و قیمت را ببینید:", ""]
-    for i, p in enumerate(products, 1):
-        lines.append(f"{i}. {format_product_short(p)}")
-    send_text(chat_id, "\n".join(lines), reply_markup=short_list_keyboard(products))
+    page_items, page, total_pages = paginate(all_products, page, PAGE_SIZE)
+    text = f"{title}\nروی محصول بزنید تا جزئیات را ببینید."
+    if total_pages > 1:
+        text += f"\nصفحه {page + 1} از {total_pages}"
+    send_text(
+        chat_id,
+        text,
+        reply_markup=short_list_keyboard(page_items, page, total_pages, prefix),
+    )
 
 
 def _send_product_detail(chat_id, product):
-    text = format_product_message(product)
-    send_text(chat_id, text, reply_markup=detail_keyboard(product))
+    send_text(chat_id, format_product_message(product), reply_markup=detail_keyboard(product))
 
 
 async def handle_start(message: Message):
     name = getattr(message.author, "first_name", None) or "کاربر"
-    text = WELCOME_MESSAGE.format(name=name)
-    send_text(message.chat_id, text, reply_markup=main_menu_keyboard())
+    send_text(message.chat_id, WELCOME_MESSAGE.format(name=name), reply_markup=main_menu_keyboard())
 
 
-async def handle_popular(chat_id):
-    products = get_top_rated(limit=10)
-    _send_short_list(chat_id, "⭐ محبوب‌ترین محصولات", products)
+async def handle_popular(chat_id, page: int = 0):
+    products = get_top_rated(limit=50)
+    _send_short_list(chat_id, "⭐ محبوب‌ترین محصولات", products, page, "popular")
 
 
 async def handle_categories_list(chat_id):
@@ -157,15 +178,15 @@ async def handle_categories_list(chat_id):
     send_text(chat_id, "📂 یک دسته‌بندی را انتخاب کنید:", reply_markup=categories_keyboard(cats))
 
 
-async def handle_category(chat_id, category_id: int):
+async def handle_category(chat_id, category_id: int, page: int = 0):
     cats = get_categories()
     cat_name = "دسته"
     for c in cats:
         if c.get("id") == category_id:
             cat_name = c.get("name") or cat_name
             break
-    products = get_by_category(category_id, limit=15)
-    _send_short_list(chat_id, f"📂 {cat_name}", products)
+    products = get_by_category(category_id, limit=100)
+    _send_short_list(chat_id, f"📂 {cat_name}", products, page, f"cat:{category_id}")
 
 
 async def handle_text(message: Message):
@@ -177,7 +198,7 @@ async def handle_text(message: Message):
     q = query.strip()
 
     if q in ("محبوب", "محبوب‌ترین", "محبوب ترین", "محبوب‌ترین‌ها"):
-        await handle_popular(chat_id)
+        await handle_popular(chat_id, 0)
         return
     if q in ("دسته", "دسته‌بندی", "دسته بندی", "دسته‌ها"):
         await handle_categories_list(chat_id)
@@ -186,34 +207,27 @@ async def handle_text(message: Message):
         await handle_start(message)
         return
 
-    # دستور جزئیات: /p123 یا /123
     if q.startswith("/") and q[1:].lstrip("pP").isdigit():
-        pid = int(q[1:].lstrip("pP"))
-        product = get_product_by_id(pid)
+        product = get_product_by_id(int(q[1:].lstrip("pP")))
         if product:
             _send_product_detail(chat_id, product)
             return
 
     cat = find_category_by_name(q.lstrip("/"))
     if cat:
-        await handle_category(chat_id, cat["id"])
+        await handle_category(chat_id, cat["id"], 0)
         return
 
-    results = search_products(q, limit=5)
+    results = search_products(q, limit=20)
     if not results:
-        send_text(
-            chat_id,
-            f"متأسفانه محصولی با عنوان «{q}» پیدا نشد 😕",
-            reply_markup=main_menu_keyboard(),
-        )
+        send_text(chat_id, f"متأسفانه محصولی با عنوان «{q}» پیدا نشد 😕", reply_markup=main_menu_keyboard())
         return
 
-    # اگر فقط یک نتیجه دقیق → مستقیم جزئیات
     if len(results) == 1:
         _send_product_detail(chat_id, results[0])
         return
 
-    _send_short_list(chat_id, f"🔍 نتایج برای «{q}»", results)
+    _send_short_list(chat_id, f"🔍 نتایج «{q}»", results, 0, f"search")
 
 
 async def handle_callback(callback):
@@ -230,29 +244,49 @@ async def handle_callback(callback):
 
     if cq_id:
         answer_callback(cq_id)
-    if not chat_id:
+    if not chat_id or data == "noop":
         return
 
-    if data == "popular":
-        await handle_popular(chat_id)
-    elif data == "categories":
-        await handle_categories_list(chat_id)
-    elif data == "home":
+    if data == "home":
         send_text(
             chat_id,
             "منوی اصلی 🌿\nنام محصول را بنویسید یا یکی از گزینه‌ها را انتخاب کنید:",
             reply_markup=main_menu_keyboard(),
         )
-    elif data.startswith("cat:"):
+        return
+
+    if data == "categories":
+        await handle_categories_list(chat_id)
+        return
+
+    if data.startswith("popular:"):
         try:
-            await handle_category(chat_id, int(data.split(":", 1)[1]))
-        except ValueError:
+            page = int(data.split(":")[1])
+        except (IndexError, ValueError):
+            page = 0
+        await handle_popular(chat_id, page)
+        return
+
+    if data.startswith("cat:"):
+        # cat:ID:PAGE
+        parts = data.split(":")
+        try:
+            cat_id = int(parts[1])
+            page = int(parts[2]) if len(parts) > 2 else 0
+            await handle_category(chat_id, cat_id, page)
+        except (IndexError, ValueError):
             pass
-    elif data.startswith("prod:"):
+        return
+
+    if data.startswith("prod:"):
         try:
-            pid = int(data.split(":", 1)[1])
-            product = get_product_by_id(pid)
+            product = get_product_by_id(int(data.split(":", 1)[1]))
             if product:
                 _send_product_detail(chat_id, product)
         except ValueError:
             pass
+        return
+
+    if data.startswith("search:"):
+        # جستجوی متنی صفحه‌بندی ندارد از state — نادیده
+        pass
