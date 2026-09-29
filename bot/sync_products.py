@@ -1,10 +1,10 @@
 """
-اسکریپت همگام‌سازی دستی محصولات از ووکامرس
-اجرا از ترمینال:
-    python -m bot.sync_products
+همگام‌سازی محصولات و دسته‌بندی‌ها
+python -m bot.sync_products
 """
-from .products import sync_products
+from .products import sync_products, sync_categories
 
 if __name__ == "__main__":
     products = sync_products(force=True)
-    print(f"تمام. تعداد محصولات در کش: {len(products)}")
+    cats = sync_categories(force=True)
+    print(f"محصولات: {len(products)} | دسته‌بندی‌ها: {len(cats)}")
