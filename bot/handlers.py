@@ -1,5 +1,5 @@
 """
-هندلرهای ربات طیبستان
+هندلرهای بازو طیبستان
 """
 import requests
 from bale import Message
@@ -16,6 +16,7 @@ from .products import (
     get_product_by_id,
     paginate,
     PAGE_SIZE,
+    to_fa_digits,
 )
 
 API = f"https://tapi.bale.ai/bot{BALE_TOKEN}"
@@ -34,7 +35,6 @@ def main_menu_keyboard():
 
 
 def _btn_label(product) -> str:
-    """نام محصول، میانگین (تعداد نظر) — بدون طیبستان"""
     name = clean_name(product.get("name") or "محصول")
     avg = product.get("average_rating") or 0
     cnt = product.get("rating_count") or 0
@@ -43,9 +43,9 @@ def _btn_label(product) -> str:
     except Exception:
         avg_f = 0
     if avg_f > 0 and cnt:
-        label = f"{name}، {avg_f:.1f} ({cnt} نظر)"
+        label = f"{name}، {to_fa_digits(f'{avg_f:.1f}')} ({to_fa_digits(cnt)} نظر)"
     elif avg_f > 0:
-        label = f"{name}، {avg_f:.1f}"
+        label = f"{name}، {to_fa_digits(f'{avg_f:.1f}')}"
     else:
         label = name
     if len(label) > 64:
@@ -54,10 +54,6 @@ def _btn_label(product) -> str:
 
 
 def short_list_keyboard(products, page: int, total_pages: int, prefix: str):
-    """
-    prefix مثلاً popular یا cat:12
-    دکمه‌های محصول + صفحه‌بندی
-    """
     rows = []
     for p in products:
         rows.append([{
@@ -65,13 +61,17 @@ def short_list_keyboard(products, page: int, total_pages: int, prefix: str):
             "callback_data": f"prod:{p.get('id')}",
         }])
 
+    # RTL: بعدی سمت راست ظاهر، قبلی سمت چپ — فلش‌ها جابه‌جا
     nav = []
-    if page > 0:
-        nav.append({"text": "⬅️ قبلی", "callback_data": f"{prefix}:{page - 1}"})
-    if total_pages > 1:
-        nav.append({"text": f"{page + 1}/{total_pages}", "callback_data": "noop"})
     if page < total_pages - 1:
-        nav.append({"text": "بعدی ➡️", "callback_data": f"{prefix}:{page + 1}"})
+        nav.append({"text": "بعدی ⬅️", "callback_data": f"{prefix}:{page + 1}"})
+    if total_pages > 1:
+        nav.append({
+            "text": f"{to_fa_digits(page + 1)}/{to_fa_digits(total_pages)}",
+            "callback_data": "noop",
+        })
+    if page > 0:
+        nav.append({"text": "قبلی ➡️", "callback_data": f"{prefix}:{page - 1}"})
     if nav:
         rows.append(nav)
 
@@ -109,7 +109,7 @@ def categories_keyboard(cats):
         name = c.get("name") or "دسته"
         label = name if len(name) <= 28 else name[:25] + "..."
         count = c.get("count") or 0
-        text = f"{label}" + (f" ({count})" if count else "")
+        text = f"{label}" + (f" ({to_fa_digits(count)})" if count else "")
         row.append({"text": text, "callback_data": f"cat:{c.get('id')}:0"})
         if len(row) == 2:
             rows.append(row)
@@ -148,7 +148,7 @@ def _send_short_list(chat_id, title: str, all_products: list, page: int, prefix:
     page_items, page, total_pages = paginate(all_products, page, PAGE_SIZE)
     text = f"{title}\nروی محصول بزنید تا جزئیات را ببینید."
     if total_pages > 1:
-        text += f"\nصفحه {page + 1} از {total_pages}"
+        text += f"\nصفحه {to_fa_digits(page + 1)} از {to_fa_digits(total_pages)}"
     send_text(
         chat_id,
         text,
@@ -227,7 +227,7 @@ async def handle_text(message: Message):
         _send_product_detail(chat_id, results[0])
         return
 
-    _send_short_list(chat_id, f"🔍 نتایج «{q}»", results, 0, f"search")
+    _send_short_list(chat_id, f"🔍 نتایج «{q}»", results, 0, "search")
 
 
 async def handle_callback(callback):
@@ -268,7 +268,6 @@ async def handle_callback(callback):
         return
 
     if data.startswith("cat:"):
-        # cat:ID:PAGE
         parts = data.split(":")
         try:
             cat_id = int(parts[1])
@@ -285,8 +284,3 @@ async def handle_callback(callback):
                 _send_product_detail(chat_id, product)
         except ValueError:
             pass
-        return
-
-    if data.startswith("search:"):
-        # جستجوی متنی صفحه‌بندی ندارد از state — نادیده
-        pass
