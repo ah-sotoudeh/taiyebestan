@@ -6,6 +6,7 @@ from requests.auth import HTTPBasicAuth
 
 from .config import WC_URL, WC_KEY, WC_SECRET
 from .products import clean_name, to_fa_digits
+from .jalali import to_jalali_str
 
 
 def fetch_product_reviews(product_id: int, limit: int = 50) -> List[Dict]:
@@ -39,11 +40,12 @@ def fetch_product_reviews(product_id: int, limit: int = 50) -> List[Dict]:
             text = re.sub(r"\s+", " ", text)
             if not text:
                 continue
+            raw_date = r.get("date_created") or ""
             reviews.append({
                 "reviewer": r.get("reviewer") or r.get("name") or "خریدار",
                 "rating": int(r.get("rating") or 0),
                 "review": text,
-                "date": (r.get("date_created") or "")[:10],
+                "date": to_jalali_str(raw_date),
             })
         if len(batch) < 100:
             break
@@ -52,12 +54,6 @@ def fetch_product_reviews(product_id: int, limit: int = 50) -> List[Dict]:
 
 
 def format_reviews_instant_view(product: Dict, reviews: List[Dict]) -> str:
-    """
-    قالب Instant View بله:
-    ```[عنوان]
-    متن طولانی
-    ```
-    """
     name = clean_name(product.get("name") or "محصول")
     avg = product.get("average_rating") or 0
     rcount = product.get("rating_count") or len(reviews)
@@ -79,7 +75,7 @@ def format_reviews_instant_view(product: Dict, reviews: List[Dict]) -> str:
         if stars:
             header += f"  {stars}"
         if date:
-            header += f"  ({to_fa_digits(date)})"
+            header += f"  ({date})"
         body_parts.append(header)
         body_parts.append(r.get("review") or "")
         body_parts.append("────────")
