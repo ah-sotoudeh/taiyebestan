@@ -9,8 +9,6 @@ from .config import (
     PROMPT_NAME_SEARCH, PROMPT_FEATURE_SEARCH,
 )
 from .products import (
-    search_products,
-    format_product_message,
     clean_name,
     get_top_rated,
     get_categories,
@@ -21,7 +19,8 @@ from .products import (
     PAGE_SIZE,
     to_fa_digits,
 )
-from .reviews_helper import fetch_product_reviews, format_reviews_instant_view
+from .products_ui import search_products, format_product_message
+from .reviews_helper import fetch_product_reviews
 
 API = f"https://tapi.bale.ai/bot{BALE_TOKEN}"
 
@@ -235,7 +234,6 @@ async def handle_text(message: Message):
 
     mode = _user_mode.get(chat_id)
 
-    # بدون حالت انتخاب‌شده → راهنما
     if mode not in ("name", "feature"):
         send_text(
             chat_id,
@@ -252,7 +250,6 @@ async def handle_text(message: Message):
             return
 
     results = search_products(q, limit=20, mode=mode)
-    # حالت را نگه می‌داریم تا چند جستجوی پشت‌سرهم ممکن باشد
 
     if not results:
         hint = "نام دیگری" if mode == "name" else "ویژگی یا کاربرد دیگری"
