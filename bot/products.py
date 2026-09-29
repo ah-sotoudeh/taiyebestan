@@ -5,8 +5,7 @@ import json
 import os
 import time
 import re
-import math
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Tuple
 from rapidfuzz import fuzz, process
 import requests
 from requests.auth import HTTPBasicAuth
@@ -17,6 +16,20 @@ from .config import (
 )
 
 CACHE_TTL_SECONDS = int(os.getenv("CACHE_TTL_SECONDS", "3600"))
+PAGE_SIZE = 8
+
+ATTR_EMOJI = {
+    "طبیعت": "🌿",
+    "ستاره": "⭐",
+    "مزاج": "⭐",
+    "شروع مصرف": "📅",
+    "ترکیبات": "🧪",
+    "خواص درمانی": "✅",
+    "خواص": "✅",
+    "احساس": "❤️",
+    "خلوص": "✨",
+    "خلوص و ترکیبات": "✨",
+}
 
 
 def _auth():
@@ -27,6 +40,15 @@ def _cache_fresh(path: str) -> bool:
     if not os.path.exists(path):
         return False
     return (time.time() - os.path.getmtime(path)) < CACHE_TTL_SECONDS
+
+
+def clean_name(name: str) -> str:
+    """حذف کلمه طیبستان از نام نمایشی"""
+    if not name:
+        return "محصول"
+    n = re.sub(r"\s*طیبستان\s*", " ", name)
+    n = re.sub(r"\s+", " ", n).strip(" -–|،,")
+    return n or name.strip()
 
 
 def _format_price(price) -> str:
@@ -50,6 +72,32 @@ def _stars_full(rating: float) -> str:
         return ""
     full = max(0, min(5, int(round(r))))
     return "⭐" * full + "☆" * (5 - full) + f" ({r:.1f})"
+
+
+def _attr_emoji(name: str) -> str:
+    n = (name or "").strip()
+    for key, emo in ATTR_EMOJI.items():
+        if key in n:
+            return emo
+    return "•"
+
+
+def _parse_attributes(item: Dict) -> List[Dict]:
+    """ویژگی‌های قابل‌نمایش محصول (مثل طبیعت، خواص، …)"""
+    result = []
+    for a in item.get("attributes") or []:
+        # تنوع‌سازها را در جزئیات جدا نشان می‌دهیم
+        if a.get("variation"):
+            continue
+        name = (a.get("name") or "").strip()
+        options = a.get("options") or []
+        if not name or not options:
+            continue
+        value = "، ".join(str(o) for o in options if o)
+        value = re.sub(r"<[^>]+>", "", value).strip()
+        if value:
+            result.append({"name": name, "value": value})
+    return result
 
 
 def _variation_label(variation: Dict) -> str:
@@ -161,9 +209,6 @@ def fetch_from_woocommerce() -> List[Dict]:
             name = item.get("name") or ""
             price = item.get("price") or item.get("regular_price") or ""
             ptype = item.get("type") or "simple"
-            short_desc = re.sub(r"<[^>]+>", "", item.get("short_description") or "").strip()
-            if len(short_desc) > 120:
-                short_desc = short_desc[:117] + "..."
 
             cats = [
                 {"id": c.get("id"), "name": c.get("name"), "slug": c.get("slug")}
@@ -190,12 +235,12 @@ def fetch_from_woocommerce() -> List[Dict]:
                 "price": str(price) if price else "",
                 "sku": item.get("sku") or "",
                 "type": ptype,
-                "short_description": short_desc,
                 "in_stock": item.get("stock_status") == "instock",
                 "variations": variations,
                 "average_rating": avg,
                 "rating_count": rcount,
                 "categories": cats,
+                "attributes": _parse_attributes(item),
             })
 
         if len(batch) < per_page:
@@ -261,19 +306,13 @@ def get_product_by_id(product_id: int) -> Optional[Dict]:
 
 
 def _bayesian_score(avg: float, count: int, global_mean: float, m: float = 10.0) -> float:
-    """
-    میانگین بیزی: محصول با نظرات بیشتر وزن بیشتری می‌گیرد.
-    m = حداقل نظرات برای اعتماد کامل به میانگین.
-    مثال: ۱ نظر ۵ ستاره < ۱۰۰ نظر ۴.۸ ستاره
-    """
     v = float(count)
     R = float(avg)
     C = float(global_mean)
     return (v / (v + m)) * R + (m / (v + m)) * C
 
 
-def get_top_rated(limit: int = 10) -> List[Dict]:
-    """محبوب‌ترین‌ها با وزن تعداد نظرات (Bayesian average)"""
+def get_top_rated(limit: int = 50) -> List[Dict]:
     products = load_products()
     rated = [
         p for p in products
@@ -281,12 +320,9 @@ def get_top_rated(limit: int = 10) -> List[Dict]:
     ]
     if not rated:
         return []
-
-    # میانگین سراسری
     total_r = sum(float(p.get("average_rating") or 0) * int(p.get("rating_count") or 0) for p in rated)
     total_c = sum(int(p.get("rating_count") or 0) for p in rated)
     global_mean = (total_r / total_c) if total_c else 4.0
-
     for p in rated:
         p["_popularity"] = _bayesian_score(
             float(p.get("average_rating") or 0),
@@ -294,12 +330,11 @@ def get_top_rated(limit: int = 10) -> List[Dict]:
             global_mean,
             m=10.0,
         )
-
     rated.sort(key=lambda p: p.get("_popularity", 0), reverse=True)
     return rated[:limit]
 
 
-def get_by_category(category_id: int, limit: int = 15) -> List[Dict]:
+def get_by_category(category_id: int, limit: int = 100) -> List[Dict]:
     products = load_products()
     matched = []
     for p in products:
@@ -307,7 +342,6 @@ def get_by_category(category_id: int, limit: int = 15) -> List[Dict]:
             if c.get("id") == category_id:
                 matched.append(p)
                 break
-
     rated = [p for p in matched if (p.get("rating_count") or 0) > 0]
     if rated:
         total_r = sum(float(p.get("average_rating") or 0) * int(p.get("rating_count") or 0) for p in rated)
@@ -319,9 +353,17 @@ def get_by_category(category_id: int, limit: int = 15) -> List[Dict]:
             p["_popularity"] = _bayesian_score(avg, cnt, global_mean, m=5.0) if cnt else 0
         matched.sort(key=lambda p: p.get("_popularity", 0), reverse=True)
     else:
-        matched.sort(key=lambda p: p.get("name") or "")
-
+        matched.sort(key=lambda p: clean_name(p.get("name") or ""))
     return matched[:limit]
+
+
+def paginate(items: List, page: int, page_size: int = PAGE_SIZE) -> Tuple[List, int, int]:
+    """برمی‌گرداند: صفحه فعلی، شماره صفحه (از ۰)، تعداد کل صفحات"""
+    total = len(items)
+    total_pages = max(1, (total + page_size - 1) // page_size)
+    page = max(0, min(page, total_pages - 1))
+    start = page * page_size
+    return items[start:start + page_size], page, total_pages
 
 
 def find_category_by_name(name: str) -> Optional[Dict]:
@@ -342,7 +384,6 @@ def search_products(query: str, limit: int = 5) -> List[Dict]:
     if not products or not q:
         return []
 
-    # دستور /p123 یا /123
     m = re.match(r"^/?p?(\d+)$", q, re.I)
     if m:
         p = get_product_by_id(int(m.group(1)))
@@ -351,7 +392,8 @@ def search_products(query: str, limit: int = 5) -> List[Dict]:
     q_norm = q.lstrip("/").lower()
     exact = []
     for p in products:
-        if q_norm in (p.get("name") or "").lower():
+        name = (p.get("name") or "").lower()
+        if q_norm in name or q_norm in clean_name(p.get("name") or "").lower():
             item = p.copy()
             item["_score"] = 100
             exact.append(item)
@@ -380,22 +422,8 @@ def search_products(query: str, limit: int = 5) -> List[Dict]:
     return matched
 
 
-def format_product_short(product: Dict) -> str:
-    """فقط نام + یک ستاره و میانگین"""
-    name = product.get("name", "محصول")
-    avg = product.get("average_rating") or 0
-    try:
-        avg_f = float(avg)
-    except Exception:
-        avg_f = 0
-    if avg_f > 0:
-        return f"{name}  ⭐ {avg_f:.1f}"
-    return name
-
-
 def format_product_message(product: Dict) -> str:
-    """جزئیات کامل: توضیح + تنوع + قیمت"""
-    name = product.get("name", "محصول")
+    name = clean_name(product.get("name", "محصول"))
     lines = [f"🛍 {name}"]
 
     avg = product.get("average_rating") or 0
@@ -403,9 +431,12 @@ def format_product_message(product: Dict) -> str:
     if avg and rcount:
         lines.append(f"{_stars_full(avg)} — {rcount} دیدگاه")
 
-    desc = product.get("short_description") or ""
-    if desc:
-        lines.append(f"📝 {desc}")
+    # ویژگی‌ها مثل سایت (هر کدام یک خط)
+    for attr in product.get("attributes") or []:
+        an = attr.get("name") or ""
+        av = attr.get("value") or ""
+        emo = _attr_emoji(an)
+        lines.append(f"{emo} {an}: {av}")
 
     variations = product.get("variations") or []
     if variations:
