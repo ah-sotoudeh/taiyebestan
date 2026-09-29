@@ -1,6 +1,6 @@
 """
 ماژول جستجو و مدیریت محصولات طیبستان
-با همگام‌سازی خودکار از WooCommerce REST API
+با همگام‌سازی خودکار از WooCommerce REST API + تنوع‌ها
 """
 import json
 import os
@@ -16,6 +16,10 @@ from .config import PRODUCTS_CACHE, SITE_URL, WC_URL, WC_KEY, WC_SECRET
 CACHE_TTL_SECONDS = int(os.getenv("CACHE_TTL_SECONDS", "3600"))
 
 
+def _auth():
+    return HTTPBasicAuth(WC_KEY, WC_SECRET)
+
+
 def _cache_is_fresh() -> bool:
     if not os.path.exists(PRODUCTS_CACHE):
         return False
@@ -24,21 +28,70 @@ def _cache_is_fresh() -> bool:
 
 
 def _format_price(price) -> str:
-    """قیمت خوانا با جداکننده هزارگان"""
     if price is None or price == "":
         return ""
     s = str(price).strip()
-    # حذف HTML احتمالی از price_html
     s = re.sub(r"<[^>]+>", "", s)
     s = s.replace("&nbsp;", " ").strip()
     try:
-        # عدد خام
         num = float(re.sub(r"[^0-9.]", "", s.split("-")[0].strip()) or 0)
         if num <= 0:
             return s
         return f"{int(num):,}".replace(",", "٬") + " تومان"
     except Exception:
         return s
+
+
+def _variation_label(variation: Dict) -> str:
+    """برچسب تنوع از attributes (مثلاً ۵ میلی‌لیتر)"""
+    attrs = variation.get("attributes") or []
+    parts = []
+    for a in attrs:
+        opt = a.get("option") or a.get("name") or ""
+        if opt:
+            parts.append(str(opt))
+    if parts:
+        return " / ".join(parts)
+    sku = variation.get("sku") or ""
+    if sku:
+        return sku
+    return "تنوع"
+
+
+def fetch_variations(product_id: int) -> List[Dict]:
+    """دریافت همه تنوع‌های یک محصول متغیر"""
+    url = f"{WC_URL.rstrip('/')}/wp-json/wc/v3/products/{product_id}/variations"
+    variations = []
+    page = 1
+    while True:
+        try:
+            resp = requests.get(
+                url,
+                params={"per_page": 100, "page": page, "status": "publish"},
+                auth=_auth(),
+                timeout=30,
+            )
+            resp.raise_for_status()
+            batch = resp.json()
+        except Exception as e:
+            print(f"خطا در تنوع محصول {product_id}:", e)
+            break
+        if not batch:
+            break
+        for v in batch:
+            price = v.get("price") or v.get("regular_price") or ""
+            stock = v.get("stock_status", "")
+            variations.append({
+                "id": v.get("id"),
+                "label": _variation_label(v),
+                "price": str(price) if price else "",
+                "sku": v.get("sku") or "",
+                "in_stock": stock == "instock",
+            })
+        if len(batch) < 100:
+            break
+        page += 1
+    return variations
 
 
 def fetch_from_woocommerce() -> List[Dict]:
@@ -60,7 +113,7 @@ def fetch_from_woocommerce() -> List[Dict]:
                     "page": page,
                     "status": "publish",
                 },
-                auth=HTTPBasicAuth(WC_KEY, WC_SECRET),
+                auth=_auth(),
                 timeout=30,
             )
             resp.raise_for_status()
@@ -75,12 +128,26 @@ def fetch_from_woocommerce() -> List[Dict]:
         for item in batch:
             name = item.get("name") or ""
             price = item.get("price") or item.get("regular_price") or ""
+            ptype = item.get("type") or "simple"
+            short_desc = item.get("short_description") or ""
+            short_desc = re.sub(r"<[^>]+>", "", short_desc).strip()
+            if len(short_desc) > 120:
+                short_desc = short_desc[:117] + "..."
+
+            variations = []
+            if ptype == "variable":
+                variations = fetch_variations(item.get("id"))
+
             products.append({
                 "id": item.get("id"),
                 "name": name,
                 "url": item.get("permalink") or f"{SITE_URL}/?p={item.get('id')}",
                 "price": str(price) if price else "",
                 "sku": item.get("sku") or "",
+                "type": ptype,
+                "short_description": short_desc,
+                "in_stock": item.get("stock_status") == "instock",
+                "variations": variations,
             })
 
         if len(batch) < per_page:
@@ -119,12 +186,6 @@ def save_products(products: List[Dict]) -> None:
 
 
 def search_products(query: str, limit: int = 5) -> List[Dict]:
-    """
-    جستجوی دقیق‌تر:
-    1) اول محصولاتی که خودِ عبارت داخل نامشان است
-    2) بعد fuzzy با آستانه بالا
-    3) فقط نتایج نزدیک به بهترین امتیاز
-    """
     products = load_products()
     q = (query or "").strip()
     if not products or not q:
@@ -132,7 +193,6 @@ def search_products(query: str, limit: int = 5) -> List[Dict]:
 
     q_norm = q.lower()
 
-    # ۱) تطبیق مستقیم (عبارت داخل نام)
     exact = []
     for p in products:
         name = p.get("name") or ""
@@ -142,40 +202,25 @@ def search_products(query: str, limit: int = 5) -> List[Dict]:
             exact.append(item)
 
     if exact:
-        # اگر تطبیق مستقیم داریم، فقط همان‌ها (مرتب‌شده کوتاه‌تر = مرتبط‌تر)
         exact.sort(key=lambda x: len(x.get("name", "")))
         return exact[:limit]
 
-    # ۲) fuzzy — آستانه بالاتر
     names = [p.get("name", "") for p in products]
-    # برای عبارت کوتاه آستانه سخت‌گیرانه‌تر
     cutoff = 80 if len(q) <= 3 else 70
 
     results = process.extract(
-        q,
-        names,
-        scorer=fuzz.partial_ratio,
-        limit=limit * 3,
-        score_cutoff=cutoff,
+        q, names, scorer=fuzz.partial_ratio, limit=limit * 3, score_cutoff=cutoff,
     )
-
     if not results:
-        # یک‌بار با scorer دیگر امتحان کن
         results = process.extract(
-            q,
-            names,
-            scorer=fuzz.WRatio,
-            limit=limit * 3,
-            score_cutoff=cutoff,
+            q, names, scorer=fuzz.WRatio, limit=limit * 3, score_cutoff=cutoff,
         )
-
     if not results:
         return []
 
     best = results[0][1]
     matched = []
     for name, score, idx in results:
-        # فقط نتایج نزدیک به بهترین
         if score < best - 12:
             continue
         product = products[idx].copy()
@@ -183,18 +228,33 @@ def search_products(query: str, limit: int = 5) -> List[Dict]:
         matched.append(product)
         if len(matched) >= limit:
             break
-
     return matched
 
 
 def format_product_message(product: Dict) -> str:
-    """فرمت متن ساده (بدون HTML — کتابخانه parse_mode ندارد)"""
+    """نام + توضیح کوتاه + همه تنوع‌ها با قیمت"""
     name = product.get("name", "محصول")
-    url = product.get("url") or product.get("permalink") or SITE_URL
-    price = _format_price(product.get("price", ""))
-
     lines = [f"🛍 {name}"]
-    if price:
-        lines.append(f"💰 قیمت: {price}")
-    lines.append(f"🔗 {url}")
+
+    desc = product.get("short_description") or ""
+    if desc:
+        lines.append(f"📝 {desc}")
+
+    variations = product.get("variations") or []
+    if variations:
+        lines.append("📦 تنوع‌ها و قیمت:")
+        for v in variations:
+            label = v.get("label") or "تنوع"
+            price = _format_price(v.get("price", ""))
+            stock = "✅" if v.get("in_stock", True) else "❌ ناموجود"
+            if price:
+                lines.append(f"  • {label}: {price} {stock if not v.get('in_stock', True) else ''}".rstrip())
+            else:
+                lines.append(f"  • {label} {stock}")
+    else:
+        price = _format_price(product.get("price", ""))
+        if price:
+            stock = "" if product.get("in_stock", True) else " (ناموجود)"
+            lines.append(f"💰 قیمت: {price}{stock}")
+
     return "\n".join(lines)
