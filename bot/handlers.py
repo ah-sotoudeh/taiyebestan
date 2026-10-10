@@ -7,6 +7,7 @@ from bale import Message
 from .config import (
     WELCOME_MESSAGE, SITE_URL, BALE_TOKEN,
     PROMPT_NAME_SEARCH, PROMPT_FEATURE_SEARCH,
+    MEZAJ_AKHTARI_URL, MEZAJ_BADAN_URL,
 )
 from .products import (
     clean_name,
@@ -38,6 +39,10 @@ def main_menu_keyboard():
             [
                 {"text": "🔍 جستجوی نام", "callback_data": "search_name"},
                 {"text": "🌿 جستجوی ویژگی", "callback_data": "search_feature"},
+            ],
+            [
+                {"text": "✨ محاسبه مزاج اختری", "web_app": {"url": MEZAJ_AKHTARI_URL}},
+                {"text": "🩺 آزمون مزاج‌شناسی", "web_app": {"url": MEZAJ_BADAN_URL}},
             ],
             [{"text": "🛒 فروشگاه", "web_app": {"url": SITE_URL}}],
         ]
