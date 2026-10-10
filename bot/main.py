@@ -1,8 +1,9 @@
 """
 ربات طیبستان — polling پایدار
 اجرا: python -u -m bot.main
+
+همگام‌سازی محصولات فقط یک‌بار در استارت انجام می‌شود.
 """
-import asyncio
 import sys
 import time
 import traceback
@@ -11,11 +12,23 @@ from bale import Bot, Message
 
 from .config import BALE_TOKEN
 from .handlers import handle_start, handle_text, handle_callback
+from .products import sync_products, sync_categories
 
 
 def log(*a):
     sys.stdout.write(" ".join(map(str, a)) + "\n")
     sys.stdout.flush()
+
+
+def sync_once():
+    """یک‌بار همگام‌سازی از ووکامرس هنگام روشن شدن بازو"""
+    log("همگام‌سازی محصولات و دسته‌ها از فروشگاه...")
+    try:
+        products = sync_products(force=True)
+        cats = sync_categories(force=True)
+        log(f"همگام‌سازی تمام شد: {len(products)} محصول، {len(cats)} دسته")
+    except Exception:
+        log("خطا در همگام‌سازی (از کش قبلی استفاده می‌شود):\n" + traceback.format_exc())
 
 
 def build_bot() -> Bot:
@@ -66,7 +79,9 @@ if __name__ == "__main__":
         log("خطا: BALE_TOKEN در .env تنظیم نشده!")
         sys.exit(1)
 
-    # حلقهٔ راه‌اندازی مجدد: اگر polling بمیرد، دوباره بالا می‌آید
+    # فقط یک‌بار هنگام روشن شدن — نه وسط کار، نه با کرون
+    sync_once()
+
     restart_delay = 3
     while True:
         try:
