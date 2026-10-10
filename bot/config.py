@@ -7,6 +7,13 @@ BALE_TOKEN = os.getenv("BALE_TOKEN", "YOUR_BOT_TOKEN_HERE")
 BALE_API = f"https://tapi.bale.ai/bot{BALE_TOKEN}"
 SITE_URL = "https://taiyebestan.ir"
 
+MEZAJ_AKHTARI_URL = os.getenv(
+    "MEZAJ_AKHTARI_URL", "https://taiyebestan.ir/mezaj-akhtari/"
+)
+MEZAJ_BADAN_URL = os.getenv(
+    "MEZAJ_BADAN_URL", "https://taiyebestan.ir/mezaj-badan/"
+)
+
 WC_URL = os.getenv("WC_URL", "https://taiyebestan.ir")
 WC_KEY = os.getenv("WC_KEY", "")
 WC_SECRET = os.getenv("WC_SECRET", "")
@@ -34,6 +41,9 @@ WELCOME_MESSAGE = """سلام {name} عزیز 🌿
 📂 دسته‌بندی‌ها
 🔍 جستجوی نام محصول
 🌿 جستجو با ویژگی / کاربرد
+✨ محاسبه مزاج اختری
+🩺 آزمون مزاج‌شناسی
+🛒 فروشگاه
 
 در جستجوی ویژگی می‌توانید مثلاً بنویسید:
 • گرم و تر
