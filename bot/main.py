@@ -3,6 +3,7 @@
 اجرا: python -u -m bot.main
 
 همگام‌سازی محصولات فقط یک‌بار در استارت انجام می‌شود.
+فقط به پیام‌های خصوصی پاسخ می‌دهد (نه کانال/گروه).
 """
 import sys
 import time
@@ -18,6 +19,61 @@ from .products import sync_products, sync_categories
 def log(*a):
     sys.stdout.write(" ".join(map(str, a)) + "\n")
     sys.stdout.flush()
+
+
+def _chat_type_str(obj) -> str:
+    if obj is None:
+        return ""
+    ctype = getattr(obj, "type", None)
+    if ctype is None and isinstance(obj, dict):
+        ctype = obj.get("type")
+    if ctype is None:
+        return ""
+    # Enum یا رشته
+    name = getattr(ctype, "name", None) or getattr(ctype, "value", None)
+    s = str(name if name is not None else ctype).lower()
+    return s
+
+
+def is_private_message(message) -> bool:
+    """فقط چت خصوصی کاربر — کانال و گروه نادیده گرفته می‌شوند."""
+    chat = getattr(message, "chat", None)
+    s = _chat_type_str(chat)
+    if "private" in s or s in ("pv", "user", "private_chat"):
+        return True
+    if any(x in s for x in ("channel", "group", "supergroup", "super_group")):
+        return False
+
+    # روش کمکی: آیدی مثبت معمولاً خصوصی است (مشابه تلگرام/بله)
+    chat_id = getattr(message, "chat_id", None)
+    if chat_id is None and chat is not None:
+        chat_id = getattr(chat, "id", None)
+    try:
+        cid = int(chat_id)
+        if cid > 0:
+            return True
+        return False
+    except (TypeError, ValueError):
+        return False
+
+
+def is_private_callback(callback) -> bool:
+    msg = getattr(callback, "message", None)
+    if msg is not None:
+        return is_private_message(msg)
+    if isinstance(callback, dict):
+        chat = (callback.get("message") or {}).get("chat") or {}
+        s = _chat_type_str(chat)
+        if "private" in s:
+            return True
+        if any(x in s for x in ("channel", "group", "supergroup")):
+            return False
+        try:
+            cid = int(chat.get("id") or 0)
+            return cid > 0
+        except (TypeError, ValueError):
+            return False
+    return False
 
 
 def sync_once():
@@ -49,6 +105,8 @@ def build_bot() -> Bot:
     @bot.listen("on_message")
     async def on_message(message: Message):
         try:
+            if not is_private_message(message):
+                return
             content = (getattr(message, "content", None) or "").strip()
             if not content:
                 return
@@ -62,6 +120,8 @@ def build_bot() -> Bot:
     @bot.listen("on_callback")
     async def on_callback(callback):
         try:
+            if not is_private_callback(callback):
+                return
             await handle_callback(callback)
         except Exception:
             log("on_callback error:\n" + traceback.format_exc())
