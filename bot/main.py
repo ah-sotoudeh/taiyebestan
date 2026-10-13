@@ -1,11 +1,11 @@
 """
-ربات طیبستان — polling پایدار
+ربات طیبستان — polling سبک و پایدار
 اجرا: python -u -m bot.main
 
-همگام‌سازی محصولات فقط یک‌بار در استارت انجام می‌شود.
-فقط به پیام‌های خصوصی پاسخ می‌دهد (نه کانال/گروه).
+استارت بدون همگام‌سازی سنگین — فقط خواندن کش.
+به‌روزرسانی کش فقط با دکمه ادمین.
+فقط به پیام‌های خصوصی پاسخ می‌دهد.
 """
-import asyncio
 import sys
 import threading
 import time
@@ -15,7 +15,7 @@ from bale import Bot, Message
 
 from .config import BALE_TOKEN
 from .handlers import handle_start, handle_text, handle_callback
-from .products import sync_products, sync_categories
+from .products import load_products, get_categories
 
 
 def log(*a):
@@ -37,7 +37,6 @@ def _chat_type_str(obj) -> str:
 
 
 def is_private_message(message) -> bool:
-    """فقط چت خصوصی کاربر — کانال و گروه نادیده گرفته می‌شوند."""
     chat = getattr(message, "chat", None)
     s = _chat_type_str(chat)
     if "private" in s or s in ("pv", "user", "private_chat"):
@@ -49,8 +48,7 @@ def is_private_message(message) -> bool:
     if chat_id is None and chat is not None:
         chat_id = getattr(chat, "id", None)
     try:
-        cid = int(chat_id)
-        return cid > 0
+        return int(chat_id) > 0
     except (TypeError, ValueError):
         return False
 
@@ -67,26 +65,25 @@ def is_private_callback(callback) -> bool:
         if any(x in s for x in ("channel", "group", "supergroup")):
             return False
         try:
-            cid = int(chat.get("id") or 0)
-            return cid > 0
+            return int(chat.get("id") or 0) > 0
         except (TypeError, ValueError):
             return False
     return False
 
 
-def sync_once():
-    log("همگام‌سازی محصولات و دسته‌ها از فروشگاه...")
+def load_cache_status():
+    """فقط وضعیت کش را گزارش بده — بدون همگام‌سازی."""
     try:
-        products = sync_products(force=True)
-        cats = sync_categories(force=True)
-        log(f"همگام‌سازی تمام شد: {len(products)} محصول، {len(cats)} دسته")
+        products = load_products()
+        cats = get_categories()
+        log(f"کش آماده: {len(products)} محصول، {len(cats)} دسته")
+        if not products:
+            log("هشدار: کش محصول خالی است. با دکمه ادمین «به‌روزرسانی کش» پر کنید.")
     except Exception:
-        log("خطا در همگام‌سازی (از کش قبلی استفاده می‌شود):\n" + traceback.format_exc())
+        log("خواندن کش:\n" + traceback.format_exc())
 
 
 def start_heartbeat(interval_sec: int = 300):
-    """هر چند دقیقه یک خط در لاگ بنویس تا بفهمیم پروسه زنده‌ست."""
-
     def _loop():
         while True:
             time.sleep(interval_sec)
@@ -143,12 +140,12 @@ def build_bot() -> Bot:
 
 
 if __name__ == "__main__":
-    log("در حال استارت ربات...")
+    log("در حال استارت ربات (حالت سبک)...")
     if not BALE_TOKEN or BALE_TOKEN == "YOUR_BOT_TOKEN_HERE":
         log("خطا: BALE_TOKEN در .env تنظیم نشده!")
         sys.exit(1)
 
-    sync_once()
+    load_cache_status()
     start_heartbeat(300)
 
     restart_delay = 3
@@ -163,7 +160,6 @@ if __name__ == "__main__":
         except SystemExit:
             log("SystemExit — راه‌اندازی مجدد...")
         except BaseException:
-            # هر خطایی از جمله NetworkError
             log("کرش ربات:\n" + traceback.format_exc())
         log(f"صبر {restart_delay} ثانیه قبل از استارت دوباره...")
         time.sleep(restart_delay)
