@@ -12,12 +12,106 @@ from .products import (
     _variation_sort_key,
     _normalize_query,
     _extract_type_filter,
-    _extract_nature_phrases,
     _matches_type,
-    _matches_nature,
-    _score_product,
     ATTR_ORDER,
 )
+
+# چهار طبع — فقط تطبیق عبارت کامل (نه تک‌کلمه)
+NATURE_EXACT = [
+    {
+        "key": "گرم و تر",
+        "variants": [
+            "گرم و تر", "گرم وتر", "گرموتر", "گرم‌وتر",
+            "garm-va-tar", "garm va tar", "garmvatar",
+        ],
+    },
+    {
+        "key": "گرم و خشک",
+        "variants": [
+            "گرم و خشک", "گرم وخشک", "گرموخشک", "گرم‌و‌خشک",
+            "garm-va-khoshk", "garm va khoshk", "garmvakhoshk",
+        ],
+    },
+    {
+        "key": "سرد و تر",
+        "variants": [
+            "سرد و تر", "سرد وتر", "سردوتر", "سرد‌وتر",
+            "sard-va-tar", "sard va tar", "sardvatar",
+        ],
+    },
+    {
+        "key": "سرد و خشک",
+        "variants": [
+            "سرد و خشک", "سرد وخشک", "سردوخشک", "سرد‌و‌خشک",
+            "sard-va-khoshk", "sard va khoshk", "sardvakhoshk",
+        ],
+    },
+]
+
+
+def _compact(s: str) -> str:
+    s = (s or "").lower().replace("‌", "")
+    s = s.replace("-", " ").replace("_", " ")
+    s = re.sub(r"\s+", "", s)
+    return s
+
+
+def _detect_exact_nature(q: str) -> Optional[dict]:
+    """اگر کوئری یکی از ۴ طبع کامل باشد، همان را برگردان."""
+    qc = _compact(q)
+    # حذف پیشوند نوع محصول برای تشخیص طبع
+    for prefix in ("عطر", "روغن", "حرز", "دمنوش", "عود"):
+        qc2 = _compact(re.sub(prefix, " ", q, flags=re.I))
+        for item in NATURE_EXACT:
+            for v in item["variants"]:
+                if _compact(v) == qc or _compact(v) == qc2 or _compact(v) in qc or _compact(v) in qc2:
+                    # فقط اگر عبارت طبع واقعاً در کوئری باشد (نه تصادفی)
+                    if _compact(v) in qc or _compact(v) in qc2:
+                        return item
+    for item in NATURE_EXACT:
+        for v in item["variants"]:
+            if _compact(v) == qc or (_compact(v) in qc and len(_compact(v)) >= 5):
+                return item
+    return None
+
+
+def _product_nature_blob(p: Dict) -> str:
+    """فقط طبیعت ویژگی‌ها + برچسب‌ها (نه کل توضیحات محصول)."""
+    parts = []
+    for a in p.get("attributes") or []:
+        an = (a.get("name") or "").lower()
+        if "طبیعت" in an:
+            parts.append(a.get("value") or "")
+    for t in p.get("tags") or []:
+        if isinstance(t, dict):
+            parts.append(t.get("name") or "")
+            parts.append(t.get("slug") or "")
+        else:
+            parts.append(str(t))
+    # بعضی فروشگاه‌ها طبع را در دسته‌بندی هم می‌گذارند
+    for c in p.get("categories") or []:
+        cn = (c.get("name") or "") + " " + (c.get("slug") or "")
+        if any(x in cn for x in ("گرم", "سرد", "garm", "sard")):
+            parts.append(cn)
+    return " ".join(parts).lower()
+
+
+def _matches_exact_nature(p: Dict, nature_item: dict) -> bool:
+    blob = _product_nature_blob(p)
+    if not blob.strip():
+        return False
+    bc = _compact(blob)
+    for v in nature_item["variants"]:
+        vc = _compact(v)
+        if not vc:
+            continue
+        # عبارت کامل داخل متن طبیعت/برچسب
+        if vc in bc:
+            return True
+        if v.lower() in blob:
+            return True
+    return False
+
 
 def search_products(query: str, limit: int = 20, mode: str = "name") -> List[Dict]:
     """
@@ -68,30 +162,56 @@ def search_products(query: str, limit: int = 20, mode: str = "name") -> List[Dic
                 break
         return matched
 
+    # ——— حالت ویژگی —————————
+    nature_item = _detect_exact_nature(q)
     type_kw, q2 = _extract_type_filter(q)
-    nature_phrases, q2 = _extract_nature_phrases(q2)
-    tokens = [t for t in re.split(r"[\s،,]+", q2) if len(t) >= 2]
+
+    # اگر طبع تشخیص داده شد، کلمات طبع را از باقیمانده حذف کن
+    if nature_item:
+        rest = q2
+        for v in nature_item["variants"]:
+            rest = rest.replace(v, " ")
+            rest = rest.replace(v.replace(" ", ""), " ")
+        # حذف تکه‌های گرم/سرد/تر/خشک فقط وقتی طبع کامل تشخیص شده
+        rest = re.sub(r"\b(گرم|سرد|تر|خشک)\b", " ", rest)
+        q2 = re.sub(r"\s+", " ", rest).strip()
+
+    tokens = [t for t in re.split(r"[\s،,]+", q2) if len(t) >= 2 and t not in ("و",)]
 
     scored = []
     for p in products:
         if type_kw and not _matches_type(p, type_kw):
             continue
-        if nature_phrases and not _matches_nature(p, nature_phrases):
-            continue
+
+        if nature_item:
+            if not _matches_exact_nature(p, nature_item):
+                continue
+            # طبع به‌تنهایی کافی است
+            if not tokens:
+                item = p.copy()
+                item["_score"] = 80
+                scored.append(item)
+                continue
 
         attr_blob = " ".join(
             f"{a.get('name','')} {a.get('value','')}" for a in (p.get("attributes") or [])
         ).lower()
-        cat_blob = " ".join(c.get("name") or "" for c in (p.get("categories") or [])).lower()
-        feature_blob = (attr_blob + " " + cat_blob).strip()
+        cat_blob = " ".join(
+            f"{(c.get('name') or '')} {(c.get('slug') or '')}" for c in (p.get("categories") or [])
+        ).lower()
+        tag_blob = " ".join(
+            f"{(t.get('name') or '')} {(t.get('slug') or '')}" if isinstance(t, dict) else str(t)
+            for t in (p.get("tags") or [])
+        ).lower()
+        feature_blob = (attr_blob + " " + cat_blob + " " + tag_blob).strip()
 
-        if not tokens and (type_kw or nature_phrases):
-            item = p.copy()
-            item["_score"] = 60
-            scored.append(item)
+        if not tokens and not nature_item and not type_kw:
             continue
 
-        if not tokens and not type_kw and not nature_phrases:
+        if not tokens and (nature_item or type_kw):
+            item = p.copy()
+            item["_score"] = 70
+            scored.append(item)
             continue
 
         score = 0
@@ -106,7 +226,7 @@ def search_products(query: str, limit: int = 20, mode: str = "name") -> List[Dic
         if score <= 0:
             continue
         item = p.copy()
-        item["_score"] = score
+        item["_score"] = score + (20 if nature_item else 0)
         scored.append(item)
 
     scored.sort(key=lambda x: (-x.get("_score", 0), len(x.get("name") or "")))
