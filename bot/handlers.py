@@ -1,6 +1,9 @@
 """
 هندلرهای بازو طیبستان
 """
+import threading
+import traceback
+
 import requests
 from bale import Message
 
@@ -8,45 +11,95 @@ from .config import (
     WELCOME_MESSAGE, SITE_URL, BALE_TOKEN,
     PROMPT_NAME_SEARCH, PROMPT_FEATURE_SEARCH,
     MEZAJ_AKHTARI_URL, MEZAJ_BADAN_URL,
+    ADMIN_IDS,
 )
 from .products import (
     clean_name,
     get_top_rated,
     get_categories,
     get_by_category,
-    find_category_by_name,
     get_product_by_id,
     paginate,
     PAGE_SIZE,
     to_fa_digits,
+    sync_products,
+    sync_categories,
 )
 from .products_ui import search_products, format_product_message
 from .reviews_helper import fetch_product_reviews
 
 API = f"https://tapi.bale.ai/bot{BALE_TOKEN}"
 
-# حالت جستجوی هر کاربر: name | feature | None
 _user_mode = {}
 
 
-def main_menu_keyboard():
-    return {
-        "inline_keyboard": [
-            [
-                {"text": "⭐ محبوب‌ترین‌ها", "callback_data": "popular:0"},
-                {"text": "📂 دسته‌بندی‌ها", "callback_data": "categories"},
-            ],
-            [
-                {"text": "🔍 جستجوی نام", "callback_data": "search_name"},
-                {"text": "🌿 جستجوی ویژگی", "callback_data": "search_feature"},
-            ],
-            [
-                {"text": "✨ محاسبه مزاج اختری", "web_app": {"url": MEZAJ_AKHTARI_URL}},
-                {"text": "🩺 آزمون مزاج‌شناسی", "web_app": {"url": MEZAJ_BADAN_URL}},
-            ],
-            [{"text": "🛒 فروشگاه", "web_app": {"url": SITE_URL}}],
-        ]
-    }
+def is_admin(user_id) -> bool:
+    try:
+        return int(user_id) in ADMIN_IDS
+    except (TypeError, ValueError):
+        return False
+
+
+def _user_id_from_message(message) -> int | None:
+    author = getattr(message, "author", None) or getattr(message, "from_user", None)
+    if author is not None:
+        for attr in ("user_id", "id"):
+            v = getattr(author, attr, None)
+            if v is not None:
+                try:
+                    return int(v)
+                except (TypeError, ValueError):
+                    pass
+    try:
+        return int(getattr(message, "chat_id", None))
+    except (TypeError, ValueError):
+        return None
+
+
+def _user_id_from_callback(callback) -> int | None:
+    for attr in ("from_user", "author", "user"):
+        u = getattr(callback, attr, None)
+        if u is not None:
+            for a in ("user_id", "id"):
+                v = getattr(u, a, None)
+                if v is not None:
+                    try:
+                        return int(v)
+                    except (TypeError, ValueError):
+                        pass
+    if isinstance(callback, dict):
+        u = callback.get("from") or callback.get("from_user") or {}
+        try:
+            return int(u.get("id") or u.get("user_id"))
+        except (TypeError, ValueError):
+            pass
+    msg = getattr(callback, "message", None)
+    if msg is not None:
+        return _user_id_from_message(msg)
+    return None
+
+
+def main_menu_keyboard(user_id=None):
+    rows = [
+        [
+            {"text": "⭐ محبوب‌ترین‌ها", "callback_data": "popular:0"},
+            {"text": "📂 دسته‌بندی‌ها", "callback_data": "categories"},
+        ],
+        [
+            {"text": "🔍 جستجوی نام", "callback_data": "search_name"},
+            {"text": "🌿 جستجوی ویژگی", "callback_data": "search_feature"},
+        ],
+        [
+            {"text": "✨ محاسبه مزاج اختری", "web_app": {"url": MEZAJ_AKHTARI_URL}},
+            {"text": "🩺 آزمون مزاج‌شناسی", "web_app": {"url": MEZAJ_BADAN_URL}},
+        ],
+        [{"text": "🛒 فروشگاه", "web_app": {"url": SITE_URL}}],
+    ]
+    if is_admin(user_id):
+        rows.append([
+            {"text": "🔄 به‌روزرسانی کش محصولات", "callback_data": "admin_sync_cache"},
+        ])
+    return {"inline_keyboard": rows}
 
 
 def _btn_label(product) -> str:
@@ -68,7 +121,7 @@ def _btn_label(product) -> str:
     return label
 
 
-def short_list_keyboard(products, page: int, total_pages: int, prefix: str):
+def short_list_keyboard(products, page: int, total_pages: int, prefix: str, user_id=None):
     rows = []
     for p in products:
         rows.append([{
@@ -165,7 +218,7 @@ def answer_callback(callback_query_id, text=None):
 
 def _send_short_list(chat_id, title: str, all_products: list, page: int, prefix: str):
     if not all_products:
-        send_text(chat_id, f"{title}\n\nمحصولی پیدا نشد.", reply_markup=main_menu_keyboard())
+        send_text(chat_id, f"{title}\n\nمحصولی پیدا نشد.", reply_markup=main_menu_keyboard(chat_id))
         return
     page_items, page, total_pages = paginate(all_products, page, PAGE_SIZE)
     text = f"{title}\nروی محصول بزنید تا جزئیات را ببینید."
@@ -186,11 +239,35 @@ def _send_product_detail(chat_id, product):
     send_text(chat_id, text, reply_markup=detail_keyboard(product))
 
 
+def _run_admin_sync(chat_id, user_id):
+    send_text(chat_id, "🔄 در حال به‌روزرسانی کش از فروشگاه...\nلطفاً چند لحظه صبر کنید.")
+
+    def work():
+        try:
+            products = sync_products(force=True)
+            cats = sync_categories(force=True)
+            send_text(
+                chat_id,
+                f"✅ کش به‌روز شد.\n🛍 محصولات: {to_fa_digits(len(products))}\n📂 دسته‌ها: {to_fa_digits(len(cats))}",
+                reply_markup=main_menu_keyboard(user_id),
+            )
+        except Exception:
+            print("admin sync error:\n" + traceback.format_exc())
+            send_text(
+                chat_id,
+                "❌ خطا در به‌روزرسانی کش. لاگ سرور را بررسی کنید.",
+                reply_markup=main_menu_keyboard(user_id),
+            )
+
+    threading.Thread(target=work, name="admin_sync", daemon=True).start()
+
+
 async def handle_start(message: Message):
     chat_id = message.chat_id
     _user_mode.pop(chat_id, None)
+    uid = _user_id_from_message(message)
     name = getattr(message.author, "first_name", None) or "کاربر"
-    send_text(chat_id, WELCOME_MESSAGE.format(name=name), reply_markup=main_menu_keyboard())
+    send_text(chat_id, WELCOME_MESSAGE.format(name=name), reply_markup=main_menu_keyboard(uid))
 
 
 async def handle_popular(chat_id, page: int = 0):
@@ -201,7 +278,7 @@ async def handle_popular(chat_id, page: int = 0):
 async def handle_categories_list(chat_id):
     cats = get_categories()
     if not cats:
-        send_text(chat_id, "دسته‌بندی‌ای یافت نشد.", reply_markup=main_menu_keyboard())
+        send_text(chat_id, "دسته‌بندی‌ای یافت نشد.", reply_markup=main_menu_keyboard(chat_id))
         return
     send_text(chat_id, "📂 یک دسته‌بندی را انتخاب کنید:", reply_markup=categories_keyboard(cats))
 
@@ -223,6 +300,7 @@ async def handle_text(message: Message):
         return
 
     chat_id = message.chat_id
+    uid = _user_id_from_message(message)
     q = query.strip()
 
     if q in ("محبوب", "محبوب‌ترین", "محبوب ترین", "محبوب‌ترین‌ها"):
@@ -244,7 +322,7 @@ async def handle_text(message: Message):
             chat_id,
             "لطفاً نوع جستجو را از دکمه‌ها انتخاب کنید:\n"
             "🔍 جستجوی نام  یا  🌿 جستجوی ویژگی",
-            reply_markup=main_menu_keyboard(),
+            reply_markup=main_menu_keyboard(uid),
         )
         return
 
@@ -261,7 +339,7 @@ async def handle_text(message: Message):
         send_text(
             chat_id,
             f"متأسفانه نتیجه‌ای برای «{q}» پیدا نشد 😕\n{hint} را امتحان کنید.",
-            reply_markup=main_menu_keyboard(),
+            reply_markup=main_menu_keyboard(uid),
         )
         return
 
@@ -285,9 +363,18 @@ async def handle_callback(callback):
         cq_id = callback.get("id") or cq_id
         chat_id = chat_id or callback.get("message", {}).get("chat", {}).get("id")
 
+    uid = _user_id_from_callback(callback)
+
     if cq_id:
         answer_callback(cq_id)
     if not chat_id or data == "noop":
+        return
+
+    if data == "admin_sync_cache":
+        if not is_admin(uid):
+            send_text(chat_id, "این گزینه فقط برای ادمین است.")
+            return
+        _run_admin_sync(chat_id, uid)
         return
 
     if data == "home":
@@ -295,18 +382,18 @@ async def handle_callback(callback):
         send_text(
             chat_id,
             "منوی اصلی 🌿\nیکی از گزینه‌ها را انتخاب کنید:",
-            reply_markup=main_menu_keyboard(),
+            reply_markup=main_menu_keyboard(uid),
         )
         return
 
     if data == "search_name":
         _user_mode[chat_id] = "name"
-        send_text(chat_id, PROMPT_NAME_SEARCH, reply_markup=main_menu_keyboard())
+        send_text(chat_id, PROMPT_NAME_SEARCH, reply_markup=main_menu_keyboard(uid))
         return
 
     if data == "search_feature":
         _user_mode[chat_id] = "feature"
-        send_text(chat_id, PROMPT_FEATURE_SEARCH, reply_markup=main_menu_keyboard())
+        send_text(chat_id, PROMPT_FEATURE_SEARCH, reply_markup=main_menu_keyboard(uid))
         return
 
     if data == "categories":
