@@ -5,7 +5,9 @@
 همگام‌سازی محصولات فقط یک‌بار در استارت انجام می‌شود.
 فقط به پیام‌های خصوصی پاسخ می‌دهد (نه کانال/گروه).
 """
+import asyncio
 import sys
+import threading
 import time
 import traceback
 
@@ -29,7 +31,6 @@ def _chat_type_str(obj) -> str:
         ctype = obj.get("type")
     if ctype is None:
         return ""
-    # Enum یا رشته
     name = getattr(ctype, "name", None) or getattr(ctype, "value", None)
     s = str(name if name is not None else ctype).lower()
     return s
@@ -44,15 +45,12 @@ def is_private_message(message) -> bool:
     if any(x in s for x in ("channel", "group", "supergroup", "super_group")):
         return False
 
-    # روش کمکی: آیدی مثبت معمولاً خصوصی است (مشابه تلگرام/بله)
     chat_id = getattr(message, "chat_id", None)
     if chat_id is None and chat is not None:
         chat_id = getattr(chat, "id", None)
     try:
         cid = int(chat_id)
-        if cid > 0:
-            return True
-        return False
+        return cid > 0
     except (TypeError, ValueError):
         return False
 
@@ -77,7 +75,6 @@ def is_private_callback(callback) -> bool:
 
 
 def sync_once():
-    """یک‌بار همگام‌سازی از ووکامرس هنگام روشن شدن بازو"""
     log("همگام‌سازی محصولات و دسته‌ها از فروشگاه...")
     try:
         products = sync_products(force=True)
@@ -85,6 +82,18 @@ def sync_once():
         log(f"همگام‌سازی تمام شد: {len(products)} محصول، {len(cats)} دسته")
     except Exception:
         log("خطا در همگام‌سازی (از کش قبلی استفاده می‌شود):\n" + traceback.format_exc())
+
+
+def start_heartbeat(interval_sec: int = 300):
+    """هر چند دقیقه یک خط در لاگ بنویس تا بفهمیم پروسه زنده‌ست."""
+
+    def _loop():
+        while True:
+            time.sleep(interval_sec)
+            log(f"heartbeat — بازو زنده است ({time.strftime('%Y-%m-%d %H:%M:%S')})")
+
+    t = threading.Thread(target=_loop, name="heartbeat", daemon=True)
+    t.start()
 
 
 def build_bot() -> Bot:
@@ -139,8 +148,8 @@ if __name__ == "__main__":
         log("خطا: BALE_TOKEN در .env تنظیم نشده!")
         sys.exit(1)
 
-    # فقط یک‌بار هنگام روشن شدن — نه وسط کار، نه با کرون
     sync_once()
+    start_heartbeat(300)
 
     restart_delay = 3
     while True:
@@ -151,8 +160,11 @@ if __name__ == "__main__":
         except KeyboardInterrupt:
             log("توقف توسط کاربر.")
             break
-        except Exception:
+        except SystemExit:
+            log("SystemExit — راه‌اندازی مجدد...")
+        except BaseException:
+            # هر خطایی از جمله NetworkError
             log("کرش ربات:\n" + traceback.format_exc())
         log(f"صبر {restart_delay} ثانیه قبل از استارت دوباره...")
         time.sleep(restart_delay)
-        restart_delay = min(restart_delay * 2, 60)
+        restart_delay = min(restart_delay * 2, 30)
