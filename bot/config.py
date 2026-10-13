@@ -21,15 +21,19 @@ WC_SECRET = os.getenv("WC_SECRET", "")
 PRODUCTS_CACHE = os.getenv("PRODUCTS_CACHE", "products.json")
 CATEGORIES_CACHE = os.getenv("CATEGORIES_CACHE", "categories.json")
 
+# ادمین‌ها (آیدی عددی بله) — دکمه به‌روزرسانی کش فقط برای این‌ها
+_admin_raw = os.getenv("ADMIN_IDS", "1304721008")
+ADMIN_IDS = set()
+for part in _admin_raw.replace(";", ",").split(","):
+    part = part.strip()
+    if part.isdigit():
+        ADMIN_IDS.add(int(part))
+
 # کانال ارسال خودکار (مثلاً @linktest یا آیدی عددی)
 CHANNEL_ID = os.getenv("CHANNEL_ID", "@linktest")
-# تعداد محصول در هر اجرای کرون
 CHANNEL_POSTS_PER_RUN = int(os.getenv("CHANNEL_POSTS_PER_RUN", "2"))
-# فایل وضعیت ارسال‌شده‌ها
 CHANNEL_STATE_FILE = os.getenv("CHANNEL_STATE_FILE", "channel_posted.json")
-# صف دستی (اختیاری): لیست id محصول
 CHANNEL_QUEUE_FILE = os.getenv("CHANNEL_QUEUE_FILE", "channel_queue.json")
-# روش انتخاب: rotate | top_rated | queue
 CHANNEL_PICK_MODE = os.getenv("CHANNEL_PICK_MODE", "rotate")
 
 WELCOME_MESSAGE = """سلام {name} عزیز 🌿
